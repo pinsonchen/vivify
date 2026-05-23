@@ -57,7 +57,8 @@ from vivify.pr_mode.worktree import WorktreeManager
 from vivify.probes.runner import aggregate_issues, run_probes
 from vivify.daemon.lock import InstanceLock
 from vivify.daemon.manager import DaemonManager  # 仅用于全局实例注册表
-from vivify.config.schema import DaemonConfig
+from vivify.config.schema import DaemonConfig, DeployConfig
+from vivify.deployers import DeployResult, get_deployer
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,8 @@ class KernelConfig:
     package_root: Optional[Path] = None  # for compute_code_hash
     state_dir: str = ".vivify"
     daemon: DaemonConfig = field(default_factory=DaemonConfig)
+    deploy: DeployConfig = field(default_factory=DeployConfig)
+    deploy_url: str = ""  # 部署地址（用于 deploy 后验证）
 
 
 @dataclass
@@ -141,6 +144,13 @@ class Kernel:
         )
         self._round_num = 0
         self._initial_code_hash = self._current_code_hash()
+
+        # ── 部署器初始化 ─────────────────────────────────────────
+        self._deployer = get_deployer(
+            repo_root=deps.repo_root,
+            deploy_method=self.config.deploy.method,
+            deploy_config=self.config.deploy.model_dump(),
+        )
 
         # ── 多实例隔离：获取锁 + 写 PID 文件 ───────────────────────────────
         self._instance_lock: Optional[InstanceLock] = None
@@ -405,6 +415,11 @@ class Kernel:
             )
             if self.deps.auto_merge:
                 self.deps.auto_merge.try_merge(pr, decision=decision, cwd=wt.path)
+
+            # PR 合并成功后执行部署
+            if self._deployer and self.config.deploy.enabled:
+                self._execute_deploy(report)
+
             report.agent_fixes += 1
             self._log_issue_action(
                 report.run_id, "heal", "success", issue,
@@ -427,6 +442,74 @@ class Kernel:
                 self.deps.worktrees.remove(wt)
             except Exception as e:  # pragma: no cover
                 logger.warning("worktree cleanup failed: %s", e)
+
+    # ── deploy ─────────────────────────────────────────────────────────────
+
+    def _execute_deploy(self, report: RoundReport) -> None:
+        """PR 合并后执行自动部署"""
+        logger.info("Starting deployment (method: %s)", self.config.deploy.method)
+        try:
+            result = self._deployer.deploy()  # type: ignore[union-attr]
+
+            if result.success:
+                logger.info(
+                    "Deploy succeeded: %s (%.1fs)",
+                    result.message, result.duration_seconds,
+                )
+                # 部署后验证
+                if self.config.deploy.verify_after_deploy and self.config.deploy_url:
+                    verified = self._deployer.verify(self.config.deploy_url)  # type: ignore[union-attr]
+                    result.verified = verified
+                    if verified:
+                        logger.info(
+                            "Post-deploy verification passed: %s",
+                            self.config.deploy_url,
+                        )
+                    else:
+                        logger.warning(
+                            "Post-deploy verification failed: %s",
+                            self.config.deploy_url,
+                        )
+            else:
+                logger.error("Deploy failed: %s", result.error)
+
+            self._log_deploy(result, report)
+
+        except Exception as e:
+            logger.error("Deploy exception: %s", e)
+            self._log_deploy(
+                DeployResult(
+                    success=False,
+                    method=self.config.deploy.method,
+                    error=str(e),
+                ),
+                report,
+            )
+
+    def _log_deploy(self, result: DeployResult, report: RoundReport) -> None:
+        """将部署结果记录到 action_logs"""
+        try:
+            self.deps.storage.log_action(
+                ActionLog(
+                    run_id=report.run_id,
+                    round_num=self._round_num,
+                    action_type="deploy",
+                    status="success" if result.success else "failed",
+                    category="deploy",
+                    title=f"deploy via {result.method}",
+                    result_summary=(
+                        result.message if result.success else result.error
+                    )[:2000],
+                    duration_seconds=result.duration_seconds,
+                    details={
+                        "method": result.method,
+                        "deploy_url": result.deploy_url,
+                        "verified": result.verified,
+                    },
+                )
+            )
+        except Exception as e:  # pragma: no cover
+            logger.debug("log_action(deploy) failed: %s", e)
 
     # ── stage 3: feature pipeline ──────────────────────────────────────────
     def _handle_features(self, *, report: RoundReport) -> None:

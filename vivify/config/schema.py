@@ -148,6 +148,30 @@ class DaemonConfig(BaseModel):
     log_stdout: bool = False               # daemon 模式是否将 stdout 写入日志
 
 
+class DeployConfig(BaseModel):
+    """部署配置"""
+
+    enabled: bool = True                      # 是否启用自动部署
+    # manual | ssh | rsync | command | webhook | github-pages | vercel | netlify
+    method: str = "manual"
+    # SSH/rsync 配置
+    ssh_host: str = ""
+    ssh_user: str = ""
+    ssh_path: str = ""
+    ssh_key: str = ""                         # SSH 私钥路径
+    ssh_mode: str = "rsync"                   # rsync | git_pull
+    # 自定义命令
+    deploy_command: str = ""
+    deploy_timeout_seconds: int = 300
+    # Webhook
+    webhook_url: str = ""
+    webhook_secret: str = ""
+    webhook_timeout_seconds: int = 30
+    # 通用
+    post_deploy_wait_seconds: int = 30        # 部署后等待时间（秒）
+    verify_after_deploy: bool = True          # 是否部署后验证
+
+
 class ProjectConfig(BaseModel):
     """项目元数据配置，由 vivify init 智能分析自动填充。"""
 
@@ -190,11 +214,13 @@ class VivifyConfig(BaseModel):
     kpi_monitor: KpiMonitorConfig = Field(default_factory=KpiMonitorConfig)
     self_growth: SelfGrowthConfig = Field(default_factory=SelfGrowthConfig)
     daemon: DaemonConfig = Field(default_factory=DaemonConfig)
+    deploy: "DeployConfig" = Field(default_factory=DeployConfig)
     project: ProjectConfig = Field(default_factory=ProjectConfig)
 
 
 __all__ = [
     "AgentConfig",
+    "DeployConfig",
     "VivifyConfig",
     "DaemonConfig",
     "EscalationConfig",
