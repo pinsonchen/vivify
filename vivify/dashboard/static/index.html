@@ -15,11 +15,18 @@
             <span id="status-text">离线</span>
         </div>
         <div class="header-right">
+            <div class="instance-selector">
+                <select id="instance-select" onchange="switchInstance(this.value)">
+                    <option value="">加载中...</option>
+                </select>
+                <span class="instance-status-badge" id="instance-status-badge"></span>
+            </div>
             <span id="project-info"></span>
         </div>
     </header>
 
     <nav class="tabs">
+        <button class="tab" data-tab="instances">实例</button>
         <button class="tab active" data-tab="overview">概览</button>
         <button class="tab" data-tab="issues">问题</button>
         <button class="tab" data-tab="actions">动作</button>
@@ -28,6 +35,16 @@
     </nav>
 
     <main>
+        <!-- 实例 Tab -->
+        <section id="tab-instances" class="tab-content">
+            <div class="instance-overview" id="instance-overview">
+                <!-- 动态填充：当前实例详情卡片 -->
+            </div>
+            <div class="instances-grid" id="instances-grid">
+                <!-- 动态填充：所有实例卡片 -->
+            </div>
+        </section>
+
         <!-- 概览 Tab -->
         <section id="tab-overview" class="tab-content active">
             <div class="cards">

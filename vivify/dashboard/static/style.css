@@ -137,3 +137,169 @@ td { font-size: 0.85rem; }
     border: 1px solid var(--border); padding: 20px;
     margin-bottom: 16px;
 }
+
+/* 实例选择器 */
+.instance-selector {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-right: 1rem;
+}
+
+.instance-selector select {
+    background: var(--bg-card);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.4rem 0.8rem;
+    font-size: 0.9rem;
+    cursor: pointer;
+    min-width: 200px;
+}
+
+.instance-selector select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.instance-status-badge {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--success);
+}
+
+.instance-status-badge.stopped {
+    background: var(--danger);
+}
+
+/* 实例详情卡片 */
+.instance-detail-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+}
+
+.instance-detail-card h3 {
+    margin: 0 0 1rem 0;
+    color: var(--accent);
+    font-size: 1.1rem;
+}
+
+.instance-meta {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 1rem;
+}
+
+.instance-meta-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.instance-meta-item .label {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.instance-meta-item .value {
+    font-size: 0.95rem;
+    color: var(--text-primary);
+    word-break: break-all;
+}
+
+/* 实例网格 */
+.instances-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 1rem;
+}
+
+.instance-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.2rem;
+    cursor: pointer;
+    transition: border-color 0.2s, transform 0.1s;
+}
+
+.instance-card:hover {
+    border-color: var(--accent);
+    transform: translateY(-2px);
+}
+
+.instance-card.active {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+}
+
+.instance-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.75rem;
+}
+
+.instance-card-name {
+    font-weight: 600;
+    color: var(--text-primary);
+    font-size: 1rem;
+}
+
+.instance-card-badge {
+    font-size: 0.7rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    background: rgba(158, 206, 106, 0.15);
+    color: var(--success);
+}
+
+.instance-card-badge.stopped {
+    background: rgba(247, 118, 142, 0.15);
+    color: var(--danger);
+}
+
+.instance-card-info {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    line-height: 1.6;
+}
+
+.instance-card-goals {
+    margin-top: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--border);
+}
+
+.instance-card-goals .goal-tag {
+    display: inline-block;
+    font-size: 0.7rem;
+    padding: 0.15rem 0.5rem;
+    margin: 0.15rem 0.2rem;
+    border-radius: 3px;
+    background: rgba(122, 162, 247, 0.1);
+    color: var(--accent);
+}
+
+/* KPI 分数条 */
+.kpi-bar {
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    margin-top: 0.75rem;
+    overflow: hidden;
+}
+
+.kpi-bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    background: linear-gradient(90deg, var(--danger), var(--warning), var(--success));
+    transition: width 0.3s;
+}
