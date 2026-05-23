@@ -42,6 +42,20 @@ vivify run --once --dry-run       # 预览检测结果（不创建 PR）
 vivify run                        # 启动守护进程
 ```
 
+## 一键安装
+
+**macOS / Linux / WSL：**
+```bash
+curl -fsSL https://raw.githubusercontent.com/pinsonchen/vivify/main/install.sh | sh
+```
+
+**Windows PowerShell：**
+```powershell
+irm https://raw.githubusercontent.com/pinsonchen/vivify/main/install.ps1 | iex
+```
+
+安装脚本会自动检测 Python 环境、安装 vivify-cli，并验证外部依赖。
+
 ## 环境要求
 
 - Python ≥ 3.10
@@ -76,6 +90,10 @@ GOALS.md                      # 项目目标与 KPI（提交）
 ```
 vivify init [--non-interactive] [--repo PATH] [--force]
 vivify run  [--once] [--dry-run] [--category CAT] [--interval N]
+vivify start [--extra-args ...]
+vivify stop  [--force]
+vivify status
+vivify list
 vivify doctor
 vivify goals    show | add ... | decompose [--goal NAME] [--dry-run]
 vivify probes   list | test <id> | enable/disable <id>
@@ -83,6 +101,29 @@ vivify fixers   list | test <id> --issue-file FILE
 vivify features list [--status S] | show <id> | retry <id>
 vivify logs     tail [-n N] [--follow]
 ```
+
+## 多实例 Daemon 管理
+
+Vivify 支持在不同项目目录下独立运行 daemon 实例，每个实例通过 PID 文件和文件锁实现隔离。
+
+```bash
+# 后台启动（当前目录绑定）
+vivify start
+
+# 查看状态
+vivify status
+
+# 列出本机所有运行中的实例
+vivify list
+
+# 停止
+vivify stop
+
+# 强制停止
+vivify stop --force
+```
+
+每个项目目录下只允许运行一个 vivify 实例。状态数据存储在 `.vivify/` 目录中，各实例完全隔离。
 
 ## 配置
 

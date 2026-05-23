@@ -138,6 +138,15 @@ class SelfGrowthConfig(BaseModel):
     test_command: str = "pytest -x tests/unit"
 
 
+class DaemonConfig(BaseModel):
+    """Daemon process management settings."""
+
+    pid_file: str = "vivify.pid"           # 相对于 state_dir
+    lock_file: str = "vivify.lock"         # 相对于 state_dir
+    stop_grace_seconds: int = 30
+    log_stdout: bool = False               # daemon 模式是否将 stdout 写入日志
+
+
 # ────────────────────────────────────────────────────────────────────────────────
 # Top-level
 # ────────────────────────────────────────────────────────────────────────────────
@@ -163,11 +172,13 @@ class VivifyConfig(BaseModel):
     escalation: EscalationConfig = Field(default_factory=EscalationConfig)
     kpi_monitor: KpiMonitorConfig = Field(default_factory=KpiMonitorConfig)
     self_growth: SelfGrowthConfig = Field(default_factory=SelfGrowthConfig)
+    daemon: DaemonConfig = Field(default_factory=DaemonConfig)
 
 
 __all__ = [
     "AgentConfig",
     "VivifyConfig",
+    "DaemonConfig",
     "EscalationConfig",
     "FixersConfig",
     "GitHubConfig",

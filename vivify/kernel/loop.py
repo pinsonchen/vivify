@@ -19,6 +19,8 @@ The kernel does **not** know about Qoder CLI specifically — it only depends on
 from __future__ import annotations
 
 import logging
+import os
+import signal
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -53,6 +55,9 @@ from vivify.pr_mode.quality_check import run_quality_checks
 from vivify.pr_mode.self_grow_guard import classify_worktree
 from vivify.pr_mode.worktree import WorktreeManager
 from vivify.probes.runner import aggregate_issues, run_probes
+from vivify.daemon.lock import InstanceLock
+from vivify.daemon.manager import DaemonManager  # 仅用于全局实例注册表
+from vivify.config.schema import DaemonConfig
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +79,8 @@ class KernelConfig:
     enable_self_improve_prompt: bool = False
     repo_url: Optional[str] = None
     package_root: Optional[Path] = None  # for compute_code_hash
+    state_dir: str = ".vivify"
+    daemon: DaemonConfig = field(default_factory=DaemonConfig)
 
 
 @dataclass
@@ -135,20 +142,110 @@ class Kernel:
         self._round_num = 0
         self._initial_code_hash = self._current_code_hash()
 
+        # ── 多实例隔离：获取锁 + 写 PID 文件 ───────────────────────────────
+        self._instance_lock: Optional[InstanceLock] = None
+        self._pid_file_path: Optional[Path] = None
+        self._acquire_instance_lock()
+
+        # ── 信号处理：SIGTERM / SIGINT 触发优雅停止 ──────────────────────
+        self._shutdown_requested = False
+        try:
+            signal.signal(signal.SIGTERM, self._handle_shutdown)
+            signal.signal(signal.SIGINT, self._handle_shutdown)
+        except (ValueError, OSError) as e:
+            # 仅在主线程能注册信号；非主线程（如测试）静默跳过
+            logger.debug("Signal handlers not registered: %s", e)
+
     # ── public API ─────────────────────────────────────────────────────────
     def run_forever(self, *, max_rounds: Optional[int] = None) -> None:
-        """Loop ``run_once`` on ``interval_seconds`` until SIGINT or hash change."""
-        while True:
-            report = self.run_once()
-            if max_rounds is not None and report.round_num >= max_rounds:
-                return
-            if self._code_hash_changed(report.code_hash):
-                logger.warning(
-                    "vivify package hash changed (%s → %s); requesting restart",
-                    self._initial_code_hash[:12], report.code_hash[:12],
-                )
-                return
-            time.sleep(max(1, self.config.interval_seconds))
+        """Loop ``run_once`` on ``interval_seconds`` until shutdown / hash change."""
+        try:
+            while not self._shutdown_requested:
+                report = self.run_once()
+                if max_rounds is not None and report.round_num >= max_rounds:
+                    break
+                if self._code_hash_changed(report.code_hash):
+                    logger.warning(
+                        "vivify package hash changed (%s → %s); requesting restart",
+                        self._initial_code_hash[:12], report.code_hash[:12],
+                    )
+                    break
+                # 分段 sleep 以便快速响应信号
+                self._interruptible_sleep(max(1, self.config.interval_seconds))
+            logger.info("Shutdown complete.")
+        finally:
+            self._release_instance_lock()
+
+    # ── daemon lifecycle helpers ───────────────────────────────────────────
+    def _acquire_instance_lock(self) -> None:
+        """Acquire a per-project lock; raise if another instance owns it."""
+        state_dir = Path(self.config.state_dir)
+        if not state_dir.is_absolute():
+            state_dir = self.deps.repo_root / state_dir
+        state_dir.mkdir(parents=True, exist_ok=True)
+
+        lock_path = state_dir / self.config.daemon.lock_file
+        lock = InstanceLock(lock_path)
+        if not lock.acquire():
+            raise RuntimeError(
+                f"Another vivify instance is already running for "
+                f"{self.deps.repo_root} (lock: {lock_path})"
+            )
+        self._instance_lock = lock
+
+        # 写入 PID 文件
+        pid_path = state_dir / self.config.daemon.pid_file
+        try:
+            pid_path.write_text(str(os.getpid()), encoding="utf-8")
+            self._pid_file_path = pid_path
+        except OSError as e:
+            logger.warning("Failed to write PID file %s: %s", pid_path, e)
+
+        # 注册到全局实例注册表（best-effort，便于 list-instances）
+        try:
+            DaemonManager(self.deps.repo_root, state_dir)._register_instance(os.getpid())
+        except Exception as e:  # pragma: no cover — registry is best-effort
+            logger.debug("Global registry update skipped: %s", e)
+
+    def _handle_shutdown(self, signum, frame):
+        """Handle SIGTERM/SIGINT for graceful shutdown."""
+        logger.info("Received signal %s, requesting graceful shutdown...", signum)
+        self._shutdown_requested = True
+
+    def _interruptible_sleep(self, seconds: float) -> None:
+        """Sleep in small chunks so shutdown signals are handled quickly."""
+        end = time.time() + seconds
+        while time.time() < end and not self._shutdown_requested:
+            remaining = end - time.time()
+            if remaining <= 0:
+                break
+            time.sleep(min(1.0, remaining))
+
+    def _release_instance_lock(self) -> None:
+        """Release lock, clean up PID file, and unregister instance."""
+        if getattr(self, "_instance_lock", None) is not None:
+            try:
+                self._instance_lock.release()
+            except Exception as e:  # pragma: no cover
+                logger.debug("Lock release failed: %s", e)
+            self._instance_lock = None
+
+        pid_path = getattr(self, "_pid_file_path", None)
+        if pid_path is not None:
+            try:
+                pid_path.unlink(missing_ok=True)
+            except OSError as e:  # pragma: no cover
+                logger.debug("PID file cleanup failed: %s", e)
+            self._pid_file_path = None
+
+        # 从全局实例注册表移除（best-effort）
+        try:
+            state_dir = Path(self.config.state_dir)
+            if not state_dir.is_absolute():
+                state_dir = self.deps.repo_root / state_dir
+            DaemonManager(self.deps.repo_root, state_dir)._unregister_instance()
+        except Exception as e:  # pragma: no cover
+            logger.debug("Global registry cleanup skipped: %s", e)
 
     def run_once(self) -> RoundReport:
         self._round_num += 1

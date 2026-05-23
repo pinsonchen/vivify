@@ -87,3 +87,9 @@ self_growth:
   enabled: false            # opt-in: lets vivify modify its own probes/fixers
   kernel_modification: pr_with_two_approvals  # or never_allowed
   test_command: "pytest -x tests/unit"
+
+daemon:
+  pid_file: vivify.pid            # relative to state_dir
+  lock_file: vivify.lock          # relative to state_dir
+  stop_grace_seconds: 30
+  log_stdout: false               # set true to redirect daemon stdout to log
