@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from auto_heal.models.feature import FeatureRequest
-from auto_heal.models.snapshot import ActionLog, KnowledgeEntry, KpiSnapshot
-from auto_heal.storage.sqlite_provider import SqliteStorageProvider
+from vivify.models.feature import FeatureRequest
+from vivify.models.snapshot import ActionLog, KnowledgeEntry, KpiSnapshot
+from vivify.storage.sqlite_provider import SqliteStorageProvider
 
 
 @pytest.fixture

@@ -3,14 +3,14 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "auto-heal-cli"
+name = "vivify-cli"
 version = "0.1.0"
 description = "Self-growing intelligent extension that mounts to any GitHub repo: monitors health, fixes issues, decomposes goals into features, and iterates with Qoder CLI via PR mode."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "auto-heal contributors" }]
-keywords = ["self-healing", "ai-agent", "qodercli", "github", "automation", "self-growth"]
+authors = [{ name = "vivify contributors" }]
+keywords = ["vivify", "self-growth", "self-healing", "ai-agent", "qodercli", "github", "automation"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "License :: OSI Approved :: MIT License",
@@ -34,21 +34,21 @@ dev = [
 ]
 
 [project.scripts]
-auto-heal = "auto_heal.cli.main:cli"
+vivify = "vivify.cli.main:cli"
 
 [project.urls]
-Homepage = "https://github.com/auto-heal/auto-heal"
-Documentation = "https://github.com/auto-heal/auto-heal/tree/main/docs"
+Homepage = "https://github.com/pinsonchen/auto-heal"
+Documentation = "https://github.com/pinsonchen/auto-heal/tree/main/docs"
 
 [tool.setuptools]
 include-package-data = true
 
 [tool.setuptools.packages.find]
-include = ["auto_heal*"]
+include = ["vivify*"]
 exclude = ["tests*"]
 
 [tool.setuptools.package-data]
-auto_heal = [
+vivify = [
     "probes/builtin/*.yml",
     "storage/migrations/*.sql",
     "agents/prompts/templates/*.j2",

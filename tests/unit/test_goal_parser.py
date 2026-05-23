@@ -1,11 +1,11 @@
-"""Tests for ``auto_heal.goals.parser``."""
+"""Tests for ``vivify.goals.parser``."""
 from __future__ import annotations
 
 from datetime import date
 
 import pytest
 
-from auto_heal.goals.parser import GoalsDoc, parse_goal_list, parse_goals
+from vivify.goals.parser import GoalsDoc, parse_goal_list, parse_goals
 
 
 GOLDEN = """\

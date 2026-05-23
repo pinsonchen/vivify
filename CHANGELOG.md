@@ -2,7 +2,7 @@
 
 ## 0.1.0 (alpha)
 
-Initial extraction from `pinsonchen/channels-monitor::auto_heal` (private).
+Initial extraction from `pinsonchen/channels-monitor::vivify` (private).
 
 - Project-agnostic kernel: detect → direct-fix → agent-fix → verify → escalate
 - SQLite `StorageProvider` (default) + abstract interface for remote storage
@@ -12,4 +12,4 @@ Initial extraction from `pinsonchen/channels-monitor::auto_heal` (private).
 - 12 built-in YAML probes + 7 built-in fixers
 - `GOALS.md` parser + Goal-to-Feature decomposer
 - KPI-degradation auto-feature creator
-- `auto-heal init` interactive scaffolder
+- `vivify init` interactive scaffolder

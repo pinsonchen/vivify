@@ -1,4 +1,4 @@
-"""Tests for ``auto_heal.pr_mode`` — pr_creator + auto_merge."""
+"""Tests for ``vivify.pr_mode`` — pr_creator + auto_merge."""
 from __future__ import annotations
 
 import subprocess
@@ -7,22 +7,22 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from auto_heal.pr_mode.auto_merge import AutoMerge, AutoMergeConfig, MergeOutcome
-from auto_heal.pr_mode.pr_creator import (
+from vivify.pr_mode.auto_merge import AutoMerge, AutoMergeConfig, MergeOutcome
+from vivify.pr_mode.pr_creator import (
     PrCreator,
     PrCreatorConfig,
     PullRequest,
     _parse_pr_url,
 )
-from auto_heal.pr_mode.self_grow_guard import DiffClass, GuardDecision
-from auto_heal.pr_mode.worktree import Worktree
+from vivify.pr_mode.self_grow_guard import DiffClass, GuardDecision
+from vivify.pr_mode.worktree import Worktree
 
 
 @pytest.fixture
 def worktree(tmp_path) -> Worktree:
     wt_path = tmp_path / "wt"
     wt_path.mkdir()
-    return Worktree(path=wt_path, branch="auto-heal/fix-1234", base_ref="origin/main")
+    return Worktree(path=wt_path, branch="vivify/fix-1234", base_ref="origin/main")
 
 
 # ── pr_creator ────────────────────────────────────────────────────────────────
@@ -40,21 +40,21 @@ def test_parse_pr_url_no_match_returns_none():
 def test_open_pr_constructs_gh_command(worktree):
     creator = PrCreator(PrCreatorConfig(
         base_branch="main",
-        default_labels=("auto-heal",),
+        default_labels=("vivify",),
     ))
     fake = MagicMock(returncode=0,
                      stdout="https://github.com/foo/bar/pull/7\n", stderr="")
     decision = GuardDecision(classification=DiffClass.PLUGIN,
-                             plugin_files=("auto_heal/probes/builtin/x.yml",))
-    with patch("auto_heal.pr_mode.pr_creator._run", return_value=fake) as mocked:
+                             plugin_files=("vivify/probes/builtin/x.yml",))
+    with patch("vivify.pr_mode.pr_creator._run", return_value=fake) as mocked:
         pr = creator.open_pr(worktree, title="T", body="B", decision=decision)
 
     assert isinstance(pr, PullRequest)
     assert pr.number == 7
     assert pr.url.endswith("/pull/7")
     assert pr.draft is False
-    assert "auto-heal" in pr.labels
-    assert "auto-heal:plugin-change" in pr.labels
+    assert "vivify" in pr.labels
+    assert "vivify:plugin-change" in pr.labels
 
     cmd = mocked.call_args[0][0]
     assert cmd[0:3] == ["gh", "pr", "create"]
@@ -64,8 +64,8 @@ def test_open_pr_constructs_gh_command(worktree):
     assert "--body-file" in cmd
     label_indices = [i for i, c in enumerate(cmd) if c == "--label"]
     label_values = [cmd[i + 1] for i in label_indices]
-    assert "auto-heal" in label_values
-    assert "auto-heal:plugin-change" in label_values
+    assert "vivify" in label_values
+    assert "vivify:plugin-change" in label_values
     assert "--draft" not in cmd  # plugin → not forced draft
 
 
@@ -73,19 +73,19 @@ def test_open_pr_kernel_decision_forces_draft(worktree):
     creator = PrCreator(PrCreatorConfig())
     fake = MagicMock(returncode=0, stdout="https://x/y/pull/9", stderr="")
     decision = GuardDecision(classification=DiffClass.KERNEL,
-                             kernel_files=("auto_heal/kernel/loop.py",))
-    with patch("auto_heal.pr_mode.pr_creator._run", return_value=fake) as mocked:
+                             kernel_files=("vivify/kernel/loop.py",))
+    with patch("vivify.pr_mode.pr_creator._run", return_value=fake) as mocked:
         pr = creator.open_pr(worktree, title="T", body="B", decision=decision)
     cmd = mocked.call_args[0][0]
     assert "--draft" in cmd
     assert pr.draft is True
-    assert "auto-heal:kernel-change" in pr.labels
+    assert "vivify:kernel-change" in pr.labels
 
 
 def test_open_pr_dedupes_labels(worktree):
-    creator = PrCreator(PrCreatorConfig(default_labels=("auto-heal", "shared")))
+    creator = PrCreator(PrCreatorConfig(default_labels=("vivify", "shared")))
     fake = MagicMock(returncode=0, stdout="https://x/y/pull/3", stderr="")
-    with patch("auto_heal.pr_mode.pr_creator._run", return_value=fake) as mocked:
+    with patch("vivify.pr_mode.pr_creator._run", return_value=fake) as mocked:
         creator.open_pr(
             worktree, title="t", body="b",
             extra_labels=["shared", "extra"],  # "shared" already in defaults
@@ -99,7 +99,7 @@ def test_open_pr_dedupes_labels(worktree):
 def test_open_pr_failure_raises(worktree):
     creator = PrCreator()
     fake = MagicMock(returncode=1, stdout="", stderr="boom")
-    with patch("auto_heal.pr_mode.pr_creator._run", return_value=fake):
+    with patch("vivify.pr_mode.pr_creator._run", return_value=fake):
         with pytest.raises(RuntimeError, match="gh pr create failed"):
             creator.open_pr(worktree, title="t", body="b")
 
@@ -107,7 +107,7 @@ def test_open_pr_failure_raises(worktree):
 def test_push_branch_runs_git_push(worktree):
     creator = PrCreator(PrCreatorConfig(remote="origin"))
     fake = MagicMock(returncode=0, stdout="", stderr="")
-    with patch("auto_heal.pr_mode.pr_creator._run", return_value=fake) as mocked:
+    with patch("vivify.pr_mode.pr_creator._run", return_value=fake) as mocked:
         creator.push_branch(worktree)
     cmd = mocked.call_args[0][0]
     assert cmd == ["git", "push", "-u", "origin", worktree.branch]
@@ -115,7 +115,7 @@ def test_push_branch_runs_git_push(worktree):
 
 def test_push_branch_failure_raises(worktree):
     fake = MagicMock(returncode=1, stdout="", stderr="rejected")
-    with patch("auto_heal.pr_mode.pr_creator._run", return_value=fake):
+    with patch("vivify.pr_mode.pr_creator._run", return_value=fake):
         with pytest.raises(RuntimeError, match="git push failed"):
             PrCreator().push_branch(worktree)
 
@@ -123,7 +123,7 @@ def test_push_branch_failure_raises(worktree):
 # ── auto_merge ────────────────────────────────────────────────────────────────
 def _pr(draft=False, number=42, url="https://github.com/foo/bar/pull/42"):
     return PullRequest(number=number, url=url, branch="b", base="main",
-                       draft=draft, labels=("auto-heal",))
+                       draft=draft, labels=("vivify",))
 
 
 def test_auto_merge_skipped_when_disabled():
@@ -143,7 +143,7 @@ def test_auto_merge_skipped_for_draft_pr():
 def test_auto_merge_skipped_when_guard_rejects():
     am = AutoMerge(AutoMergeConfig(enabled=True))
     decision = GuardDecision(classification=DiffClass.KERNEL,
-                             kernel_files=("auto_heal/kernel/loop.py",))
+                             kernel_files=("vivify/kernel/loop.py",))
     out = am.try_merge(_pr(), decision=decision)
     assert out.requested is False
     assert "guard rejected" in (out.skipped_reason or "")
@@ -155,8 +155,8 @@ def test_auto_merge_runs_gh_command():
     ))
     fake = MagicMock(returncode=0, stdout="", stderr="")
     decision = GuardDecision(classification=DiffClass.PLUGIN,
-                             plugin_files=("auto_heal/probes/builtin/x.yml",))
-    with patch("auto_heal.pr_mode.auto_merge._run", return_value=fake) as mocked:
+                             plugin_files=("vivify/probes/builtin/x.yml",))
+    with patch("vivify.pr_mode.auto_merge._run", return_value=fake) as mocked:
         out = am.try_merge(_pr(), decision=decision)
     assert out.requested is True
     cmd = mocked.call_args[0][0]
@@ -170,7 +170,7 @@ def test_auto_merge_runs_gh_command():
 def test_auto_merge_handles_gh_failure():
     am = AutoMerge(AutoMergeConfig(enabled=True))
     fake = MagicMock(returncode=1, stdout="", stderr="not mergeable")
-    with patch("auto_heal.pr_mode.auto_merge._run", return_value=fake):
+    with patch("vivify.pr_mode.auto_merge._run", return_value=fake):
         out = am.try_merge(_pr())
     assert out.requested is True
     assert out.merged is False

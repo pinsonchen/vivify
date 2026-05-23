@@ -7,9 +7,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from auto_heal.interfaces.probe import ProbeContext
-from auto_heal.models import Issue, IssueLevel
-from auto_heal.probes.base import YamlProbe
+from vivify.interfaces.probe import ProbeContext
+from vivify.models import Issue, IssueLevel
+from vivify.probes.base import YamlProbe
 
 
 @pytest.fixture
@@ -23,7 +23,7 @@ def ctx(tmp_path):
 
 
 def _builtin_dir() -> Path:
-    return Path(__file__).resolve().parents[2] / "auto_heal" / "probes" / "builtin"
+    return Path(__file__).resolve().parents[2] / "vivify" / "probes" / "builtin"
 
 
 def test_load_all_builtin_probes_have_valid_schema():

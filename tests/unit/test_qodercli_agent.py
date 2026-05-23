@@ -1,4 +1,4 @@
-"""Tests for ``auto_heal.agents.qodercli_agent`` — mocks subprocess."""
+"""Tests for ``vivify.agents.qodercli_agent`` — mocks subprocess."""
 from __future__ import annotations
 
 import subprocess
@@ -7,12 +7,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from auto_heal.agents.qodercli_agent import (
+from vivify.agents.qodercli_agent import (
     QoderCliAgent,
     QoderCliConfig,
     _filter_hooks,
 )
-from auto_heal.agents.slot_manager import AGENT_ENV_TAG
+from vivify.agents.slot_manager import AGENT_ENV_TAG
 
 
 @pytest.fixture

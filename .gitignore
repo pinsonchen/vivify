@@ -7,6 +7,6 @@ dist/
 .venv/
 .pytest_cache/
 .coverage
-.auto-heal/state.db
-.auto-heal/logs/
-.auto-heal/worktrees/
+.vivify/state.db
+.vivify/logs/
+.vivify/worktrees/
