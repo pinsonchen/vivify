@@ -18,6 +18,7 @@ The kernel does **not** know about Qoder CLI specifically — it only depends on
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import signal
@@ -31,8 +32,11 @@ from typing import Optional
 from vivify.agents.history import load_history
 from vivify.agents.prompts import builders, parsers
 from vivify.fixers.registry import FixerRegistry
+from vivify.goals.decomposer import AgentGoalDecomposer, GoalDecomposerConfig
+from vivify.goals.parser import parse_goals
 from vivify.interfaces.agent import CodingAgent
 from vivify.interfaces.fixer import FixContext, FixResult
+from vivify.interfaces.goal_decomposer import RepoState
 from vivify.interfaces.probe import Probe, ProbeContext
 from vivify.interfaces.storage import StorageProvider
 from vivify.kernel.code_hash import compute_code_hash
@@ -47,6 +51,7 @@ from vivify.kernel.escalator import Escalator, EscalationPolicy
 from vivify.kernel.failure_tracker import FailureTracker
 from vivify.kernel.feature_pipeline import FeaturePipeline, FeatureRunReport
 from vivify.kernel.health_monitor import HealthMonitor
+from vivify.models.feature import FeatureRequest, FeatureSpec
 from vivify.models.issue import Issue
 from vivify.models.snapshot import ActionLog
 from vivify.pr_mode.auto_merge import AutoMerge
@@ -57,7 +62,7 @@ from vivify.pr_mode.worktree import WorktreeManager
 from vivify.probes.runner import aggregate_issues, run_probes
 from vivify.daemon.lock import InstanceLock
 from vivify.daemon.manager import DaemonManager  # 仅用于全局实例注册表
-from vivify.config.schema import DaemonConfig, DeployConfig
+from vivify.config.schema import DaemonConfig, DeployConfig, GoalsConfig
 from vivify.deployers import DeployResult, get_deployer
 
 logger = logging.getLogger(__name__)
@@ -84,6 +89,8 @@ class KernelConfig:
     daemon: DaemonConfig = field(default_factory=DaemonConfig)
     deploy: DeployConfig = field(default_factory=DeployConfig)
     deploy_url: str = ""  # 部署地址（用于 deploy 后验证）
+    goals: GoalsConfig = field(default_factory=GoalsConfig)
+    default_branch: str = "main"  # 用于 goal decompose 时构造 RepoState
 
 
 @dataclass
@@ -151,6 +158,17 @@ class Kernel:
             deploy_method=self.config.deploy.method,
             deploy_config=self.config.deploy.model_dump(),
         )
+
+        # ── Goals 自动分解器初始化 ─────────────────────────────────
+        self._goal_decomposer = AgentGoalDecomposer(
+            agent=self.deps.agent,
+            repo_root=self.deps.repo_root,
+            config=GoalDecomposerConfig(
+                max_features_per_decompose=self.config.goals.max_features_per_decompose,
+            ),
+        )
+        self._last_decompose_time: float = 0.0
+        self._goals_file_hash: str = ""
 
         # ── 多实例隔离：获取锁 + 写 PID 文件 ───────────────────────────────
         self._instance_lock: Optional[InstanceLock] = None
@@ -266,6 +284,7 @@ class Kernel:
             issues = self._detect()
             report.issues_seen = len(issues)
             self._handle_issues(issues, report=report)
+            self._maybe_decompose_goals()
             self._handle_features(report=report)
             self._maybe_run_health_monitor(report=report)
         except Exception as e:
@@ -539,6 +558,123 @@ class Kernel:
                 report.features_processed += 1
             except Exception as e:
                 logger.exception("FeaturePipeline crashed on #%s: %s", fr.id, e)
+
+    # ── stage 3.5: goals auto-decomposition ────────────────────────────────
+    def _maybe_decompose_goals(self) -> None:
+        """根据配置定时或检测变更自动分解 goals 为 feature requests。"""
+        if self.config.dry_run:
+            return
+        goals_cfg = self.config.goals
+        goals_path = Path(goals_cfg.path)
+        if not goals_path.is_absolute():
+            goals_path = self.deps.repo_root / goals_path
+        if not goals_path.exists():
+            return
+
+        # 计算当前文件 hash（用于变更检测）
+        try:
+            current_hash = hashlib.md5(goals_path.read_bytes()).hexdigest()
+        except OSError as e:
+            logger.debug("read GOALS.md failed: %s", e)
+            return
+
+        should_decompose = False
+        reason = ""
+
+        # 时间间隔触发（_last_decompose_time 初始为 0 → 首轮必触发）
+        now = time.time()
+        interval_seconds = max(1, goals_cfg.decompose_interval_hours) * 3600
+        if now - self._last_decompose_time >= interval_seconds:
+            should_decompose = True
+            reason = f"interval ({goals_cfg.decompose_interval_hours}h)"
+
+        # 文件变更触发
+        if goals_cfg.decompose_on_change:
+            if self._goals_file_hash and current_hash != self._goals_file_hash:
+                should_decompose = True
+                reason = "GOALS.md changed"
+
+        if not should_decompose:
+            # 即便不触发，也要记录初始 hash 以便后续检测变更
+            if not self._goals_file_hash:
+                self._goals_file_hash = current_hash
+            return
+
+        logger.info("Goals auto-decompose triggered: %s", reason)
+        try:
+            doc = parse_goals(goals_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            logger.warning("parse GOALS.md failed: %s", e)
+            # hash 仍更新以避免重复尝试错误内容
+            self._goals_file_hash = current_hash
+            return
+
+        if not doc.goals:
+            self._last_decompose_time = now
+            self._goals_file_hash = current_hash
+            return
+
+        # 收集已存在的 open features 用于去重
+        open_features: list[FeatureRequest] = []
+        for status in ("pending", "approved"):
+            try:
+                open_features.extend(
+                    self.deps.storage.list_features(status=status, limit=200)
+                )
+            except Exception as e:  # pragma: no cover
+                logger.debug("list_features(%s) failed: %s", status, e)
+        existing_titles_lower = {
+            (fr.title or "").strip().lower() for fr in open_features
+        }
+
+        repo_state = RepoState(
+            repo_root=str(self.deps.repo_root),
+            default_branch=self.config.default_branch,
+        )
+
+        total_created = 0
+        any_failure = False
+        for goal in doc.goals:
+            try:
+                specs = self._goal_decomposer.decompose(
+                    goal, repo_state, open_features, recent_snapshots=[],
+                )
+            except Exception as e:
+                any_failure = True
+                logger.warning("decompose goal '%s' failed: %s", goal.name, e)
+                continue
+            for spec in specs:
+                key = (spec.title or "").strip().lower()
+                if not key or key in existing_titles_lower:
+                    continue
+                fid = self._store_feature_request(spec)
+                if fid:
+                    existing_titles_lower.add(key)
+                    total_created += 1
+
+        # 全部失败时不更新时间戳，下轮再试；hash 仍更新
+        if not any_failure or total_created > 0:
+            self._last_decompose_time = now
+        self._goals_file_hash = current_hash
+        logger.info(
+            "Goals decompose completed: %d feature request(s) created",
+            total_created,
+        )
+
+    def _store_feature_request(self, spec: FeatureSpec) -> Optional[int]:
+        """将 FeatureSpec 写入 feature_requests 表，返回新 id 或 None。"""
+        try:
+            fr = FeatureRequest(
+                title=spec.title,
+                description=spec.description,
+                type=spec.type,
+                parent_goal=spec.parent_goal,
+                priority=spec.priority,
+            )
+            return self.deps.storage.create_feature(fr)
+        except Exception as e:  # pragma: no cover
+            logger.warning("create_feature(decomposed) failed: %s", e)
+            return None
 
     # ── stage 4: KPI health monitor ────────────────────────────────────────
     def _maybe_run_health_monitor(self, *, report: RoundReport) -> None:
