@@ -32,6 +32,10 @@ dev = [
     "pytest-cov>=4.1",
     "ruff>=0.4",
 ]
+dashboard = [
+    "fastapi>=0.100.0",
+    "uvicorn[standard]>=0.22.0",
+]
 
 [project.scripts]
 vivify = "vivify.cli.main:cli"

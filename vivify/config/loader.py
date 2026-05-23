@@ -41,6 +41,19 @@ def _merge_env(base: dict) -> dict:
     return base
 
 
+def find_state_dir(start: Path | str | None = None) -> Path | None:
+    """Walk up from ``start`` (default: cwd) looking for a ``.vivify`` directory.
+
+    Returns the resolved Path if found, otherwise ``None``.
+    """
+    current = Path(start).resolve() if start is not None else Path.cwd().resolve()
+    for candidate in [current, *current.parents]:
+        target = candidate / ".vivify"
+        if target.is_dir():
+            return target
+    return None
+
+
 def load_config(path: Path | str | None = None) -> VivifyConfig:
     """Load ``.vivify.yml`` if it exists; otherwise return defaults."""
     raw: dict = {}
@@ -61,4 +74,4 @@ def load_config(path: Path | str | None = None) -> VivifyConfig:
     return VivifyConfig(**raw)
 
 
-__all__ = ["load_config"]
+__all__ = ["load_config", "find_state_dir"]

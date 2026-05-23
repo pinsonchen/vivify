@@ -1,7 +1,6 @@
 """Dashboard 只读数据库访问层。"""
 from __future__ import annotations
 
-import json
 import sqlite3
 from pathlib import Path
 from typing import Optional
@@ -96,7 +95,7 @@ class DashboardDB:
     def get_rounds(self, limit: int = 20) -> list[dict]:
         """查询运行轮次（通过 action_logs 聚合）。"""
         query = """
-            SELECT run_id, round_num, 
+            SELECT run_id, round_num,
                    COUNT(*) as action_count,
                    SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) as success_count,
                    SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) as failed_count,

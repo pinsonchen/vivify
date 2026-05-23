@@ -15,11 +15,11 @@ from .log_streamer import tail_log
 def create_app(state_dir: Optional[Path] = None) -> FastAPI:
     """创建 Dashboard FastAPI 应用实例。"""
     app = FastAPI(title="Vivify Dashboard", version="0.1.0")
-    
+
     # 解析状态目录
     if state_dir is None:
         state_dir = Path.cwd() / ".vivify"
-    
+
     db_path = state_dir / "state.db"
     log_path = state_dir / "logs" / "vivify.log"
     static_dir = Path(__file__).parent / "static"
@@ -41,7 +41,7 @@ def create_app(state_dir: Optional[Path] = None) -> FastAPI:
         db = get_db()
         if not db:
             return {"running": False, "message": "数据库尚未创建，请先运行 vivify run"}
-        
+
         # 读取 PID 文件判断 daemon 状态
         pid_file = state_dir / "vivify.pid"
         daemon_running = False
@@ -55,7 +55,7 @@ def create_app(state_dir: Optional[Path] = None) -> FastAPI:
                 daemon_pid = pid
             except (ValueError, OSError):
                 pass
-        
+
         status = db.get_status()
         rounds = db.get_rounds(limit=1)
         return {
@@ -151,7 +151,7 @@ def create_app(state_dir: Optional[Path] = None) -> FastAPI:
         )
 
     # --- 前端静态文件 ---
-    
+
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 

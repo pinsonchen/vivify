@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from importlib.resources import files
 from pathlib import Path
 
 from vivify.config.defaults import DEFAULT_GITIGNORE_ENTRIES
 from vivify.intelligence import (
-    Classifier,
     Configurator,
     Interviewer,
     Scanner,
@@ -37,6 +37,7 @@ def register(sub: argparse._SubParsersAction) -> None:
         default=None,
         help="Override detected project scenario type.",
     )
+    p.add_argument("--qodercli-path", default="qodercli", help="qodercli 可执行文件路径")
     p.set_defaults(func=run)
 
 
@@ -79,6 +80,19 @@ def _write_user_dir_readmes(repo: Path) -> None:
         "# User fixers\n\nDrop Python modules with a `FIXER` (or `FIXERS`) export here.\n",
         encoding="utf-8",
     )
+
+
+def _guess_language(signals) -> str:
+    """从扩展名频率猜测主语言。"""
+    lang_map = {
+        ".py": "Python", ".js": "JavaScript", ".ts": "TypeScript",
+        ".go": "Go", ".rs": "Rust", ".java": "Java", ".rb": "Ruby",
+        ".md": "Markdown", ".html": "HTML", ".css": "CSS",
+    }
+    if signals.file_extensions:
+        top_ext = signals.file_extensions.most_common(1)[0][0]
+        return lang_map.get(top_ext, top_ext)
+    return ""
 
 
 def _scenario_from_value(value: str) -> ScenarioType:
@@ -209,23 +223,31 @@ def run(args: argparse.Namespace) -> int:
     signals = Scanner(repo).scan()
 
     # -- 检测 qodercli --
-    analyzer = AIAnalyzer()
+    analyzer = AIAnalyzer(binary_path=args.qodercli_path)
     qodercli_available, qodercli_info = analyzer.is_available()
     if qodercli_available:
         print(f"  qodercli:    {qodercli_info} (AI 决策已启用)")
     else:
-        print("  qodercli:    未找到 (将使用规则引擎)")
+        print("  [ERROR] qodercli 未找到。vivify 的智能引擎依赖 qodercli 运行。")
+        print("  请先安装 qodercli: https://docs.qoder.ai/install")
+        print("  或指定路径: vivify init --qodercli-path /path/to/qodercli")
+        sys.exit(1)
 
     # ── Step 2: 分类项目 ──
     print("分析项目类型...")
     ai_result = None
-    # 仅当用户未显式指定 --type 时才尝试 AI 分类（--type 强制覆盖 AI 分类结果）
-    if qodercli_available and not args.type:
-        print("\n  正在使用 AI 分析项目...")
+
+    # AI 分析
+    print("\n  正在使用 AI 分析项目...")
+    ai_result = analyzer.analyze(repo, signals)
+
+    if not ai_result:
+        # 重试一次
+        print("  AI 分析首次未成功，正在重试...")
         ai_result = analyzer.analyze(repo, signals)
 
     if ai_result:
-        # AI 分析成功
+        # AI 成功 - 构造 profile
         try:
             scenario = ScenarioType(ai_result.scenario)
         except ValueError:
@@ -238,17 +260,24 @@ def run(args: argparse.Namespace) -> int:
             framework=ai_result.framework or "",
             reasoning=ai_result.reasoning,
         )
-        print(
-            f"  AI 分析完成: {profile.primary_scenario.value} "
-            f"(置信度: {profile.confidence:.0%})"
+        print(f"  AI 分析完成: {profile.primary_scenario.value} (置信度: {profile.confidence:.0%})")
+    elif args.type:
+        # 用户手动指定了 --type
+        scenario = ScenarioType(args.type)
+        profile = ProjectProfile(
+            primary_scenario=scenario,
+            secondary_scenarios=[],
+            confidence=1.0,
+            language=_guess_language(signals),
+            framework="",
+            reasoning=f"用户手动指定: {args.type}",
         )
+        print(f"  使用手动指定类型: {args.type}")
+        ai_result = None
     else:
-        # 规则引擎 fallback（或 --type 已指定时）
-        # 即使 --type 已指定，也尝试一次 AI 分析以获取配置发现值
-        if qodercli_available and args.type and ai_result is None:
-            print("\n  正在使用 AI 发现配置值（场景已由 --type 指定）...")
-            ai_result = analyzer.analyze(repo, signals)
-        profile = Classifier().classify(signals)
+        print("  [ERROR] AI 分析失败。请检查 qodercli 配置或使用 --type 手动指定项目类型。")
+        print(f"  可用类型: {', '.join(s.value for s in ScenarioType)}")
+        sys.exit(1)
 
     # 如果 --type 手动指定，覆盖 primary_scenario
     if args.type:
@@ -345,14 +374,13 @@ def run(args: argparse.Namespace) -> int:
     _patch_gitignore(repo)
 
     # ── Step 13: 打印总结 ──
-    ai_status = "AI 驱动" if ai_result else "规则引擎"
     print("\nvivify init 完成!")
     print(f"  项目类型:    {profile.primary_scenario.value}")
     print(f"  主要语言:    {profile.language}")
     print(f"  部署地址:    {deploy_url or '未配置'}")
     print(f"  启用探针:    {len(probes)} 个")
     print(f"  启用修复器:  {len(fixers)} 个")
-    print(f"  决策引擎:    {ai_status}")
+    print(f"    决策引擎:  AI 驱动 (qodercli {qodercli_info})")
     print()
     print("后续步骤:")
     print("  vivify doctor")

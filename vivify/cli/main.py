@@ -7,6 +7,7 @@ from typing import Sequence
 
 from vivify.cli import (
     daemon_cmd,
+    dashboard_cmd,
     doctor_cmd,
     features_cmd,
     fixers_cmd,
@@ -37,6 +38,7 @@ def _build_parser() -> argparse.ArgumentParser:
     features_cmd.register(sub)
     logs_cmd.register(sub)
     daemon_cmd.register(sub)
+    dashboard_cmd.register(sub)
 
     return parser
 
