@@ -22,6 +22,7 @@ class PrConfig(BaseModel):
     labels: List[str] = Field(default_factory=lambda: ["vivify"])
     draft_default: bool = False
     fetch_timeout_seconds: int = 120
+    merge_poll_timeout_seconds: int = 120  # 等待 PR 合并的超时（秒），0=不等待
 
 
 class QoderCliConfig(BaseModel):

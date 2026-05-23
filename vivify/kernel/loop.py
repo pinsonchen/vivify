@@ -433,11 +433,20 @@ class Kernel:
                 decision=decision,
             )
             if self.deps.auto_merge:
-                self.deps.auto_merge.try_merge(pr, decision=decision, cwd=wt.path)
+                merge_outcome = self.deps.auto_merge.try_merge(pr, decision=decision, cwd=wt.path)
+            else:
+                merge_outcome = None
 
-            # PR 合并成功后执行部署
+            # 仅在 PR 实际合并后触发部署
             if self._deployer and self.config.deploy.enabled:
-                self._execute_deploy(report)
+                if merge_outcome and merge_outcome.merged:
+                    logger.info("PR merged, executing deploy...")
+                    self._execute_deploy(report)
+                elif merge_outcome and merge_outcome.requested and not merge_outcome.merged:
+                    logger.info("Auto-merge requested but not yet merged (timeout); deploy skipped")
+                elif not self.deps.auto_merge:
+                    # 无 auto_merge 配置（手动合并场景），跳过部署
+                    logger.info("No auto_merge configured; deploy skipped until next run")
 
             report.agent_fixes += 1
             self._log_issue_action(

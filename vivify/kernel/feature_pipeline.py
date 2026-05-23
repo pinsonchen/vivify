@@ -234,7 +234,14 @@ class FeaturePipeline:
             )
 
             if self.auto_merge is not None:
-                self.auto_merge.try_merge(pr, decision=decision, cwd=wt.path)
+                merge_outcome = self.auto_merge.try_merge(pr, decision=decision, cwd=wt.path)
+                if merge_outcome.merged:
+                    logger.info("Feature PR #%s merged successfully", feature.id)
+                elif merge_outcome.requested and not merge_outcome.merged:
+                    logger.info(
+                        "Feature PR #%s auto-merge requested but not yet merged (timeout)",
+                        feature.id,
+                    )
 
             # Followups
             followups = self._create_followups(feature, output)

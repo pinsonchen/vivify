@@ -123,6 +123,8 @@ def run(args: argparse.Namespace) -> int:
     ))
     auto_merge = AutoMerge(AutoMergeConfig(
         enabled=cfg.pr.auto_merge,
+        poll_timeout_seconds=cfg.pr.merge_poll_timeout_seconds,
+        poll_interval_seconds=10,
     ))
 
     health_monitor: Optional[HealthMonitor] = None
@@ -146,6 +148,10 @@ def run(args: argparse.Namespace) -> int:
         only_category=args.category,
         package_root=Path(__file__).resolve().parents[1],
         enable_self_improve_prompt=cfg.self_growth.enabled,
+        deploy=cfg.deploy,
+        deploy_url=cfg.project.deploy_url,
+        goals=cfg.goals,
+        default_branch=cfg.pr.base_branch,
     )
 
     deps = KernelDeps(
