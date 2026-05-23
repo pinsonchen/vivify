@@ -50,6 +50,26 @@ def run(args: argparse.Namespace) -> int:
     print(f"[{ 'OK' if has_token else 'WARN'}] env {token_env}: "
           f"{'present' if has_token else 'missing (gh may still work via gh auth)'}")
 
+    # 检查 ~/.vivify/env 文件
+    env_file = Path.home() / ".vivify" / "env"
+    if env_file.exists():
+        print("[ OK ] ~/.vivify/env: exists (will be loaded by daemon)")
+    elif not has_token:
+        print("[WARN] ~/.vivify/env: missing (run 'vivify init' to configure)")
+
+    # 验证 gh 实际认证状态
+    try:
+        gh_result = subprocess.run(
+            ["gh", "auth", "status"], capture_output=True, text=True, timeout=10
+        )
+        gh_authed = gh_result.returncode == 0
+        print(f"[{'OK' if gh_authed else 'WARN'}] gh auth: "
+              f"{'authenticated' if gh_authed else 'not authenticated'}")
+        if not gh_authed and not has_token:
+            overall_ok = False
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
     state_dir = Path(cfg.state_dir)
     if not state_dir.exists():
         print(f"[INFO] state dir `{state_dir}` will be created on first run")

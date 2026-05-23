@@ -34,7 +34,7 @@ def _slugify(text: str, *, max_len: int = 48) -> str:
     return s[:max_len] or "task"
 
 
-def _run(cmd, cwd, timeout=60) -> subprocess.CompletedProcess:
+def _run(cmd, cwd, timeout=120) -> subprocess.CompletedProcess:
     return subprocess.run(
         list(cmd), cwd=str(cwd), capture_output=True, text=True, timeout=timeout
     )
@@ -51,6 +51,7 @@ class WorktreeManager:
         branch_prefix: str = "vivify/",
         base_branch: str = "main",
         fetch_before_create: bool = True,
+        fetch_timeout: int = 120,
     ):
         self.repo_root = Path(repo_root)
         self.worktree_base = (
@@ -61,6 +62,7 @@ class WorktreeManager:
         self.branch_prefix = branch_prefix
         self.base_branch = base_branch
         self.fetch_before_create = fetch_before_create
+        self.fetch_timeout: int = fetch_timeout
 
     # ── public API ──────────────────────────────────────────────────────────
     def create(self, slug_hint: str, *, base_ref: Optional[str] = None) -> Worktree:
@@ -148,7 +150,7 @@ class WorktreeManager:
     def _resolve_base_ref(self) -> str:
         if self.fetch_before_create:
             _run(["git", "fetch", "--quiet", "origin", self.base_branch],
-                 cwd=self.repo_root, timeout=60)
+                 cwd=self.repo_root, timeout=self.fetch_timeout)
         # Prefer the remote tracking ref if it exists; fall back to local branch.
         if self._ref_exists(f"origin/{self.base_branch}"):
             return f"origin/{self.base_branch}"

@@ -21,6 +21,7 @@ class PrConfig(BaseModel):
     auto_merge: bool = False
     labels: List[str] = Field(default_factory=lambda: ["vivify"])
     draft_default: bool = False
+    fetch_timeout_seconds: int = 120
 
 
 class QoderCliConfig(BaseModel):

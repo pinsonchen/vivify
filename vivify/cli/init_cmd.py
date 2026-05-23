@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import subprocess
 import sys
 from importlib.resources import files
 from pathlib import Path
@@ -199,6 +201,25 @@ def _build_yaml(
     return "\n".join(lines) + "\n"
 
 
+def _save_env_token(token: str) -> None:
+    """将 GH_TOKEN 保存到 ~/.vivify/env"""
+    env_dir = Path.home() / ".vivify"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    env_file = env_dir / "env"
+
+    # 读取现有内容，避免重复
+    existing_lines = []
+    if env_file.exists():
+        existing_lines = env_file.read_text().splitlines()
+
+    # 替换或添加 GH_TOKEN
+    new_lines = [line for line in existing_lines if not line.startswith("GH_TOKEN=")]
+    new_lines.append(f"GH_TOKEN={token}")
+
+    env_file.write_text("\n".join(new_lines) + "\n")
+    env_file.chmod(0o600)  # 仅 owner 可读写
+
+
 # ---------------------------------------------------------------------------
 # Main command
 # ---------------------------------------------------------------------------
@@ -232,6 +253,48 @@ def run(args: argparse.Namespace) -> int:
         print("  请先安装 qodercli: https://docs.qoder.ai/install")
         print("  或指定路径: vivify init --qodercli-path /path/to/qodercli")
         sys.exit(1)
+
+    # === GitHub 认证配置 ===
+    print("\n📌 Step 1.5: 检查 GitHub 认证...")
+    gh_token = os.environ.get("GH_TOKEN", "")
+    gh_authenticated = False
+
+    if gh_token:
+        print("  GH_TOKEN:    已配置 ✓")
+        gh_authenticated = True
+    else:
+        # 检查 gh auth 状态
+        try:
+            result = subprocess.run(
+                ["gh", "auth", "status"],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0:
+                print("  gh auth:     已认证 ✓")
+                gh_authenticated = True
+            else:
+                print("  GH_TOKEN:    未配置")
+                print("  gh auth:     未认证")
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            print("  GH_TOKEN:    未配置")
+            print("  gh CLI:      未安装")
+
+    if not gh_authenticated:
+        print()
+        print("  ⚠️  GitHub 认证未配置，vivify 将无法自动创建 PR。")
+        print("  请提供 GitHub Personal Access Token (需要 repo 权限):")
+        print()
+
+        if not non_interactive:
+            token = input("  GH_TOKEN (留空跳过): ").strip()
+            if token:
+                _save_env_token(token)
+                gh_authenticated = True
+                print("  ✅ Token 已保存到 ~/.vivify/env")
+            else:
+                print("  ⏭️  跳过。后续可通过 'export GH_TOKEN=...' 或编辑 ~/.vivify/env 配置")
+        else:
+            print("  提示: 设置 GH_TOKEN 环境变量或运行 'gh auth login'")
 
     # ── Step 2: 分类项目 ──
     print("分析项目类型...")

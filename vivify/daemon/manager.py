@@ -59,6 +59,16 @@ class DaemonManager:
         if extra_args:
             cmd.extend(extra_args)
 
+        # 加载全局环境配置
+        custom_env = os.environ.copy()
+        env_file = Path.home() / ".vivify" / "env"
+        if env_file.exists():
+            for line in env_file.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, _, value = line.partition("=")
+                    custom_env[key.strip()] = value.strip()
+
         # 平台特定的后台启动
         if sys.platform == "win32":
             CREATE_NO_WINDOW = 0x08000000
@@ -69,6 +79,7 @@ class DaemonManager:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,
+                env=custom_env,
             )
         else:
             # Unix: 使用 start_new_session 脱离终端，等效于 setsid
@@ -79,6 +90,7 @@ class DaemonManager:
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,
                 start_new_session=True,
+                env=custom_env,
             )
 
         # 写入 PID 文件
