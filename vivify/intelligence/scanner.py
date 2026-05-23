@@ -115,6 +115,10 @@ class ProjectSignals:
     # 内部缓存
     _dependencies: set[str] = field(default_factory=set)
 
+    # QoderCLI 信号
+    qodercli_available: bool = False
+    qodercli_version: str | None = None
+
 
 class Scanner:
     """扫描项目目录，收集分类所需的信号。"""
@@ -138,6 +142,7 @@ class Scanner:
         self._detect_frameworks(signals)
         self._detect_tests(signals)
         self._detect_deploy(signals)
+        self._scan_qodercli(signals)
         return signals
 
     # ---------- 文件遍历 ----------
@@ -453,3 +458,23 @@ class Scanner:
             signals.deploy_configs.append("Dockerfile")
         if signals.has_docker_compose:
             signals.deploy_configs.append("docker-compose")
+
+    # ---------- QoderCLI ----------
+
+    def _scan_qodercli(self, signals: ProjectSignals) -> None:
+        """检测 qodercli 是否可用。"""
+        import shutil
+        binary = shutil.which("qodercli")
+        if not binary:
+            return
+        try:
+            import subprocess
+            result = subprocess.run(
+                [binary, "--version"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                signals.qodercli_available = True
+                signals.qodercli_version = result.stdout.strip().splitlines()[0] if result.stdout.strip() else None
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass

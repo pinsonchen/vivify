@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from collections import Counter
 from pathlib import Path
+from unittest.mock import patch, MagicMock
 
 from vivify.intelligence import Scanner, Classifier, Configurator, Interviewer, ScenarioType
 from vivify.intelligence.scanner import ProjectSignals
 from vivify.intelligence.configurator import ConfigQuestion, SCENARIO_PROBES, SCENARIO_FIXERS
 from vivify.intelligence.goals_templates import render_goals
 from vivify.intelligence.classifier import ProjectProfile
+from vivify.intelligence.ai_analyzer import AIAnalyzer
 
 
 # ============================================================
@@ -281,3 +283,95 @@ class TestGoalsTemplates:
         result = render_goals("unknown-scenario-xyz")
         generic_result = render_goals("generic")
         assert result == generic_result
+
+
+# ============================================================
+# AIAnalyzer Tests
+# ============================================================
+
+
+class TestAIAnalyzer:
+    """AIAnalyzer 单元测试。"""
+
+    def test_is_available_found(self):
+        """qodercli 可用时返回 True 和版本号。"""
+        with patch("shutil.which", return_value="/usr/local/bin/qodercli"):
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(returncode=0, stdout="1.0.3\n")
+                analyzer = AIAnalyzer()
+                available, info = analyzer.is_available()
+                assert available is True
+                assert "1.0.3" in info
+
+    def test_is_available_not_found(self):
+        """qodercli 不在 PATH 中时返回 False。"""
+        with patch("shutil.which", return_value=None):
+            analyzer = AIAnalyzer()
+            available, info = analyzer.is_available()
+            assert available is False
+            assert "not found" in info
+
+    def test_parse_output_valid_json(self):
+        """能正确从 fenced JSON 块解析结果。"""
+        analyzer = AIAnalyzer()
+        output = '''Some preamble text
+```json
+{
+  "scenario": "docs-only",
+  "language": "Markdown",
+  "framework": "",
+  "description": "多平台直播指南",
+  "deploy_url": "https://tools.pinsonbot.com/mlive/",
+  "test_command": "",
+  "build_command": "",
+  "dev_command": "",
+  "health_endpoint": "",
+  "goals_markdown": "## Goal: 保持文档时效\\n- KPI: doc_staleness target=<=30days direction=down unit=days",
+  "reasoning": "项目全是 markdown 文件",
+  "confidence": 0.95
+}
+```
+Some trailing text'''
+        result = analyzer._parse_output(output)
+        assert result is not None
+        assert result.scenario == "docs-only"
+        assert result.language == "Markdown"
+        assert result.deploy_url == "https://tools.pinsonbot.com/mlive/"
+        assert result.confidence == 0.95
+
+    def test_parse_output_invalid_json(self):
+        """无效 JSON 时返回 None。"""
+        analyzer = AIAnalyzer()
+        result = analyzer._parse_output("no json here at all")
+        assert result is None
+
+    def test_parse_output_invalid_scenario(self):
+        """无效 scenario 值时 fallback 为 generic。"""
+        analyzer = AIAnalyzer()
+        output = '```json\n{"scenario": "invalid-type", "language": "Python"}\n```'
+        result = analyzer._parse_output(output)
+        assert result is not None
+        assert result.scenario == "generic"
+
+    def test_analyze_fallback_on_failure(self):
+        """qodercli 执行失败时 analyze 返回 None。"""
+        with patch("shutil.which", return_value="/usr/local/bin/qodercli"):
+            with patch("subprocess.run", side_effect=OSError("timeout")):
+                analyzer = AIAnalyzer()
+                result = analyzer.analyze(Path("/tmp"), ProjectSignals())
+                assert result is None
+
+    def test_build_prompt_contains_key_info(self):
+        """prompt 包含项目关键信息。"""
+        from vivify.intelligence.scanner import ProjectSignals
+        signals = ProjectSignals()
+        signals.project_name = "test-project"
+        signals.readme_content = "# Test\nhttps://example.com"
+        signals.files = ["README.md", "index.html"]
+        signals.total_files = 2
+
+        analyzer = AIAnalyzer()
+        prompt = analyzer._build_prompt(signals)
+        assert "test-project" in prompt
+        assert "scenario" in prompt
+        assert "json" in prompt

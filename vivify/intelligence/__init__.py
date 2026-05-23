@@ -5,12 +5,15 @@
 
 from __future__ import annotations
 
+from .ai_analyzer import AIAnalyzer, AIAnalysisResult
 from .classifier import Classifier, ProjectProfile, ScenarioType
 from .configurator import ConfigQuestion, Configurator, SCENARIO_FIXERS, SCENARIO_PROBES
 from .interviewer import Interviewer
 from .scanner import ProjectSignals, Scanner
 
 __all__ = [
+    "AIAnalyzer",
+    "AIAnalysisResult",
     "Scanner",
     "ProjectSignals",
     "Classifier",

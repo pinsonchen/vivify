@@ -13,6 +13,8 @@ from vivify.intelligence import (
     Scanner,
     ScenarioType,
 )
+from vivify.intelligence.ai_analyzer import AIAnalyzer
+from vivify.intelligence.classifier import ProjectProfile
 from vivify.intelligence.goals_templates import render_goals
 
 
@@ -87,6 +89,26 @@ def _scenario_from_value(value: str) -> ScenarioType:
     return ScenarioType.GENERIC
 
 
+def _build_ai_goals(goals_markdown: str, owner: str) -> str:
+    """包装 AI 生成的 GOALS 内容为完整文件。"""
+    owner_clean = owner.lstrip("@") or "team"
+    header = f"""---
+version: 1
+owner: "@{owner_clean}"
+review_cadence: weekly
+---
+
+# Project Goals
+
+This file is read by `vivify goals decompose` to derive concrete
+FeatureRequests on a schedule. Each goal must declare at least one KPI.
+"""
+    # goals_markdown 可能已经包含 header，检查一下
+    if goals_markdown.startswith("---"):
+        return goals_markdown
+    return header + "\n" + goals_markdown
+
+
 def _build_yaml(
     profile,
     config_values: dict[str, str],
@@ -142,6 +164,23 @@ def _build_yaml(
     for f in fixers:
         lines.append(f"    - {f}")
 
+    # -- agent 配置 --（无论 qodercli 是否可用都生成，方便后续安装）
+    lines.append("")
+    lines.append("agent:")
+    lines.append("  type: qodercli")
+    lines.append("  qodercli:")
+    lines.append("    binary_path: qodercli")
+    lines.append("    model: ultimate")
+    lines.append("    max_turns_fix: 30")
+    lines.append("    max_turns_develop: 100")
+    lines.append("    max_turns_evaluate: 20")
+    lines.append("    max_turns_verify: 20")
+    lines.append("    max_turns_decompose: 30")
+    lines.append("    timeout_fix_seconds: 1800")
+    lines.append("    timeout_develop_seconds: 3600")
+    lines.append('    extra_args: ["--yolo", "-q"]')
+    lines.append("    max_concurrent_processes: 10")
+
     lines.append("")
     return "\n".join(lines) + "\n"
 
@@ -169,9 +208,47 @@ def run(args: argparse.Namespace) -> int:
     print("\n扫描项目结构...")
     signals = Scanner(repo).scan()
 
+    # -- 检测 qodercli --
+    analyzer = AIAnalyzer()
+    qodercli_available, qodercli_info = analyzer.is_available()
+    if qodercli_available:
+        print(f"  qodercli:    {qodercli_info} (AI 决策已启用)")
+    else:
+        print("  qodercli:    未找到 (将使用规则引擎)")
+
     # ── Step 2: 分类项目 ──
     print("分析项目类型...")
-    profile = Classifier().classify(signals)
+    ai_result = None
+    # 仅当用户未显式指定 --type 时才尝试 AI 分类（--type 强制覆盖 AI 分类结果）
+    if qodercli_available and not args.type:
+        print("\n  正在使用 AI 分析项目...")
+        ai_result = analyzer.analyze(repo, signals)
+
+    if ai_result:
+        # AI 分析成功
+        try:
+            scenario = ScenarioType(ai_result.scenario)
+        except ValueError:
+            scenario = ScenarioType.GENERIC
+        profile = ProjectProfile(
+            primary_scenario=scenario,
+            secondary_scenarios=[],
+            confidence=ai_result.confidence,
+            language=ai_result.language,
+            framework=ai_result.framework or "",
+            reasoning=ai_result.reasoning,
+        )
+        print(
+            f"  AI 分析完成: {profile.primary_scenario.value} "
+            f"(置信度: {profile.confidence:.0%})"
+        )
+    else:
+        # 规则引擎 fallback（或 --type 已指定时）
+        # 即使 --type 已指定，也尝试一次 AI 分析以获取配置发现值
+        if qodercli_available and args.type and ai_result is None:
+            print("\n  正在使用 AI 发现配置值（场景已由 --type 指定）...")
+            ai_result = analyzer.analyze(repo, signals)
+        profile = Classifier().classify(signals)
 
     # 如果 --type 手动指定，覆盖 primary_scenario
     if args.type:
@@ -206,6 +283,22 @@ def run(args: argparse.Namespace) -> int:
     # ── Step 5: 自动发现填充 ──
     questions = configurator.auto_discover(signals, questions)
 
+    # -- AI 发现的值覆盖/补充自动发现 --
+    if ai_result:
+        ai_overrides = {
+            "project.deploy_url": ai_result.deploy_url,
+            "project.test_command": ai_result.test_command,
+            "project.build_command": ai_result.build_command,
+            "project.dev_command": ai_result.dev_command,
+            "project.health_endpoint": ai_result.health_endpoint,
+            "project.description": ai_result.description,
+        }
+        for q in questions:
+            override = ai_overrides.get(q.key)
+            if override and not q.default:
+                q.default = override
+                q.source = "AI 分析"
+
     # ── Step 6: 展示已发现的配置 ──
     discovered = [(q.key, q.default, q.source) for q in questions if q.default and q.source]
     if discovered:
@@ -235,7 +328,10 @@ def run(args: argparse.Namespace) -> int:
     # ── Step 10: 生成 GOALS.md ──
     goals_dest = repo / "GOALS.md"
     owner = config_values.get("project.name", "team")
-    goals_content = render_goals(profile.primary_scenario.value, owner=owner)
+    if ai_result and ai_result.goals_markdown:
+        goals_content = _build_ai_goals(ai_result.goals_markdown, owner)
+    else:
+        goals_content = render_goals(profile.primary_scenario.value, owner=owner)
     if goals_dest.exists() and not args.force:
         print("\n  GOALS.md 已存在，跳过 (使用 --force 覆盖)")
     else:
@@ -249,12 +345,14 @@ def run(args: argparse.Namespace) -> int:
     _patch_gitignore(repo)
 
     # ── Step 13: 打印总结 ──
+    ai_status = "AI 驱动" if ai_result else "规则引擎"
     print("\nvivify init 完成!")
     print(f"  项目类型:    {profile.primary_scenario.value}")
     print(f"  主要语言:    {profile.language}")
     print(f"  部署地址:    {deploy_url or '未配置'}")
     print(f"  启用探针:    {len(probes)} 个")
     print(f"  启用修复器:  {len(fixers)} 个")
+    print(f"  决策引擎:    {ai_status}")
     print()
     print("后续步骤:")
     print("  vivify doctor")
