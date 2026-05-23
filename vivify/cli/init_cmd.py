@@ -45,7 +45,7 @@ def _write_user_dir_readmes(repo: Path) -> None:
     fixers_dir.mkdir(parents=True, exist_ok=True)
     (probes_dir / "README.md").write_text(
         "# User probes\n\nDrop `.yml` or `.py` probe definitions here. "
-        "See https://github.com/pinsonchen/auto-heal/tree/main/docs/probes.md\n",
+        "See https://github.com/pinsonchen/vivify/tree/main/docs/probes.md\n",
         encoding="utf-8",
     )
     (fixers_dir / "README.md").write_text(

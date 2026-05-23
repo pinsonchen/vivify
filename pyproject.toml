@@ -37,8 +37,8 @@ dev = [
 vivify = "vivify.cli.main:cli"
 
 [project.urls]
-Homepage = "https://github.com/pinsonchen/auto-heal"
-Documentation = "https://github.com/pinsonchen/auto-heal/tree/main/docs"
+Homepage = "https://github.com/pinsonchen/vivify"
+Documentation = "https://github.com/pinsonchen/vivify/tree/main/docs"
 
 [tool.setuptools]
 include-package-data = true
