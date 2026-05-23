@@ -67,7 +67,8 @@ class StorageConfig(BaseModel):
 class GitHubConfig(BaseModel):
     enabled: bool = True
     repo: str = ""             # auto-detected from ``git remote`` when blank
-    token_env: str = "GH_TOKEN"
+    token_env: str = "GH_TOKEN"  # 环境变量名（向后兼容）
+    token: str = ""               # 实例级 token（直接存储，优先级最高）
     mirror_issues: bool = True
 
 

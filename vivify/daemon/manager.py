@@ -59,7 +59,7 @@ class DaemonManager:
         if extra_args:
             cmd.extend(extra_args)
 
-        # 加载全局环境配置
+        # 加载全局环境配置（fallback）
         custom_env = os.environ.copy()
         env_file = Path.home() / ".vivify" / "env"
         if env_file.exists():
@@ -68,6 +68,29 @@ class DaemonManager:
                 if line and not line.startswith("#") and "=" in line:
                     key, _, value = line.partition("=")
                     custom_env[key.strip()] = value.strip()
+
+        # 实例级配置覆盖全局：从 .vivify.yml 读取 github.token
+        try:
+            import yaml  # 延迟导入，避免启动顺序的硬依赖
+            config_path = self.repo_root / ".vivify.yml"
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    instance_cfg = yaml.safe_load(f) or {}
+                gh_cfg = instance_cfg.get("github", {}) or {}
+                instance_token = gh_cfg.get("token", "") or ""
+                if instance_token:
+                    custom_env["GH_TOKEN"] = instance_token
+                # 也支持自定义 token_env 名称：如果指定其他 env名，
+                # 将其值映射到 GH_TOKEN 以供下游使用
+                token_env_name = gh_cfg.get("token_env", "GH_TOKEN") or "GH_TOKEN"
+                if (
+                    token_env_name != "GH_TOKEN"
+                    and token_env_name in custom_env
+                    and not custom_env.get("GH_TOKEN")
+                ):
+                    custom_env["GH_TOKEN"] = custom_env[token_env_name]
+        except Exception:
+            pass  # 配置读取失败不影响启动
 
         # 平台特定的后台启动
         if sys.platform == "win32":

@@ -131,6 +131,7 @@ def _build_yaml(
     probes: list[str],
     fixers: list[str],
     default_branch: str,
+    github_token: str = "",
 ) -> str:
     """生成 .vivify.yml 内容（纯字符串拼接）。"""
     name = config_values.get("project.name", "")
@@ -194,8 +195,19 @@ def _build_yaml(
     lines.append("    max_turns_decompose: 30")
     lines.append("    timeout_fix_seconds: 1800")
     lines.append("    timeout_develop_seconds: 3600")
-    lines.append('    extra_args: ["--yolo", "-q"]')
+    lines.append("    extra_args: [\"--yolo\", \"-q\"]")
     lines.append("    max_concurrent_processes: 10")
+
+    # -- github 配置（实例级）--
+    lines.append("")
+    lines.append("github:")
+    lines.append("  enabled: true")
+    lines.append('  token_env: "GH_TOKEN"')
+    if github_token:
+        lines.append(f'  token: "{github_token}"  # 实例级 token，优先级高于环境变量')
+    else:
+        lines.append('  token: ""  # 可填入实例级 token，优先级高于环境变量')
+    lines.append("  mirror_issues: true")
 
     lines.append("")
     return "\n".join(lines) + "\n"
@@ -257,6 +269,7 @@ def run(args: argparse.Namespace) -> int:
     # === GitHub 认证配置 ===
     print("\n📌 Step 1.5: 检查 GitHub 认证...")
     gh_token = os.environ.get("GH_TOKEN", "")
+    instance_gh_token = ""  # 将写入 .vivify.yml 的实例级 token
     gh_authenticated = False
 
     if gh_token:
@@ -288,9 +301,13 @@ def run(args: argparse.Namespace) -> int:
         if not non_interactive:
             token = input("  GH_TOKEN (留空跳过): ").strip()
             if token:
+                # 实例级：写入 .vivify.yml（主要）
+                instance_gh_token = token
+                # 全局 fallback：同时保存到 ~/.vivify/env
                 _save_env_token(token)
                 gh_authenticated = True
-                print("  ✅ Token 已保存到 ~/.vivify/env")
+                print("  ✅ Token 将写入项目 .vivify.yml 配置（实例级）")
+                print("  ✅ 同时保存一份到 ~/.vivify/env作为全局 fallback")
             else:
                 print("  ⏭️  跳过。后续可通过 'export GH_TOKEN=...' 或编辑 ~/.vivify/env 配置")
         else:
@@ -413,7 +430,10 @@ def run(args: argparse.Namespace) -> int:
 
     # ── Step 9: 生成 .vivify.yml ──
     default_branch = signals.default_branch or "main"
-    yaml_content = _build_yaml(profile, config_values, probes, fixers, default_branch)
+    yaml_content = _build_yaml(
+        profile, config_values, probes, fixers, default_branch,
+        github_token=instance_gh_token,
+    )
     cfg_dest.parent.mkdir(parents=True, exist_ok=True)
     cfg_dest.write_text(yaml_content, encoding="utf-8")
 

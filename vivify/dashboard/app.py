@@ -157,7 +157,7 @@ def _check_config_health(repo_root: Path, state_dir_path: Path) -> dict:
             "fix_hint": "运行 vivify init 或设置 project.type",
         })
 
-    # 4. qodercli 可用性
+    # 4. qodercli 可用性 — 基于实例配置
     qodercli_bin = cfg.get("agent", {}).get("qodercli", {}).get("binary_path", "qodercli")
     qodercli_found = shutil.which(qodercli_bin)
     if qodercli_found:
@@ -168,32 +168,48 @@ def _check_config_health(repo_root: Path, state_dir_path: Path) -> dict:
     else:
         checks.append({
             "id": "qodercli", "name": "AI 智能引擎 (qodercli)", "category": "智能",
-            "status": "missing", "message": "qodercli 未找到",
-            "fix_hint": "安装 qodercli 并确保在 PATH 中",
+            "status": "missing", "message": f"未找到: {qodercli_bin}",
+            "fix_hint": "安装 qodercli 或在 .vivify.yml 中设置 agent.qodercli.binary_path",
         })
 
-    # 5. GH_TOKEN
-    env_file = Path.home() / ".vivify" / "env"
-    has_token_env = bool(os.environ.get("GH_TOKEN", ""))
-    has_token_file = False
-    if env_file.exists():
-        try:
-            _env_content = env_file.read_text(encoding="utf-8")
-            _parts = _env_content.split("GH_TOKEN=")
-            has_token_file = len(_parts) > 1 and len(_parts[1].split("\n")[0].strip()) > 0
-        except OSError:
-            pass
-    if has_token_env or has_token_file:
+    # 5. GH_TOKEN — 实例配置优先，全局 fallback
+    gh_cfg = cfg.get("github", {}) or {}
+    instance_token = gh_cfg.get("token", "") or ""
+    token_env_name = gh_cfg.get("token_env", "GH_TOKEN") or "GH_TOKEN"
+
+    if instance_token:
         checks.append({
             "id": "gh_token", "name": "GitHub 认证", "category": "集成",
-            "status": "ok", "message": "GH_TOKEN 已配置",
+            "status": "ok", "message": "实例 token 已配置",
+        })
+    elif os.environ.get(token_env_name):
+        checks.append({
+            "id": "gh_token", "name": "GitHub 认证", "category": "集成",
+            "status": "ok", "message": f"通过环境变量 {token_env_name} 配置",
         })
     else:
-        checks.append({
-            "id": "gh_token", "name": "GitHub 认证", "category": "集成",
-            "status": "missing", "message": "GH_TOKEN 未配置，无法创建 PR",
-            "fix_hint": "运行 vivify init 配置 token，或编辑 ~/.vivify/env",
-        })
+        env_file = Path.home() / ".vivify" / "env"
+        has_token_file = False
+        if env_file.exists():
+            try:
+                _env_content = env_file.read_text(encoding="utf-8")
+                _parts = _env_content.split(f"{token_env_name}=")
+                has_token_file = (
+                    len(_parts) > 1 and len(_parts[1].split("\n")[0].strip()) > 0
+                )
+            except OSError:
+                pass
+        if has_token_file:
+            checks.append({
+                "id": "gh_token", "name": "GitHub 认证", "category": "集成",
+                "status": "ok", "message": "通过 ~/.vivify/env 配置 (全局)",
+            })
+        else:
+            checks.append({
+                "id": "gh_token", "name": "GitHub 认证", "category": "集成",
+                "status": "missing", "message": "未配置 GitHub Token",
+                "fix_hint": "在 .vivify.yml 中设置 github.token 或配置 GH_TOKEN 环境变量",
+            })
 
     # 6. Deploy 配置
     deploy = cfg.get("deploy", {})
