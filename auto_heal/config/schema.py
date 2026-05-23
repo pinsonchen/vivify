@@ -1,0 +1,184 @@
+"""Pydantic schema for ``.auto-heal.yml``.
+
+Mirrors the configuration shape declared in plan §4. Every field has a
+sensible default so a freshly-initialised repo can run with an empty config.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import List, Literal, Optional, Tuple
+
+from pydantic import BaseModel, Field, ConfigDict
+
+
+# ────────────────────────────────────────────────────────────────────────────────
+# Sub-models
+# ────────────────────────────────────────────────────────────────────────────────
+
+
+class PrConfig(BaseModel):
+    base_branch: str = "main"
+    branch_prefix: str = "auto-heal/"
+    auto_merge: bool = False
+    labels: List[str] = Field(default_factory=lambda: ["auto-heal"])
+    draft_default: bool = False
+
+
+class QoderCliConfig(BaseModel):
+    binary_path: str = "qodercli"
+    model: str = "ultimate"
+    max_turns_fix: int = 30
+    max_turns_develop: int = 100
+    max_turns_evaluate: int = 20
+    max_turns_verify: int = 20
+    max_turns_decompose: int = 30
+    timeout_fix_seconds: int = 1800
+    timeout_develop_seconds: int = 3600
+    timeout_evaluate_seconds: int = 600
+    timeout_verify_seconds: int = 600
+    timeout_decompose_seconds: int = 600
+    extra_args: List[str] = Field(default_factory=lambda: ["--yolo", "-q"])
+    max_concurrent_processes: int = 10
+    slot_wait_timeout_seconds: int = 300
+    auto_trust_workspace: bool = True
+
+
+class AgentConfig(BaseModel):
+    type: Literal["qodercli"] = "qodercli"
+    qodercli: QoderCliConfig = Field(default_factory=QoderCliConfig)
+
+
+class SqliteConfig(BaseModel):
+    path: str = ".auto-heal/state.db"
+
+
+class RemoteStorageConfig(BaseModel):
+    base_url: str = ""
+    secret_env: str = "AUTO_HEAL_SECRET"
+    timeout_seconds: int = 10
+
+
+class StorageConfig(BaseModel):
+    type: Literal["sqlite", "remote"] = "sqlite"
+    sqlite: SqliteConfig = Field(default_factory=SqliteConfig)
+    remote: RemoteStorageConfig = Field(default_factory=RemoteStorageConfig)
+
+
+class GitHubConfig(BaseModel):
+    enabled: bool = True
+    repo: str = ""             # auto-detected from ``git remote`` when blank
+    token_env: str = "GH_TOKEN"
+    mirror_issues: bool = True
+
+
+class ProbesConfig(BaseModel):
+    enabled: List[str] = Field(default_factory=lambda: [
+        "ci_status",
+        "dependency_vulnerabilities",
+        "test_coverage",
+        "error_log_patterns",
+        "lint_typecheck",
+        "github_issue_backlog",
+        "build_duration",
+        "repo_size",
+        "doc_staleness",
+        "dead_code",
+        "stale_branches",
+        "secrets_scan",
+    ])
+    user_probes_dir: str = ".auto-heal/probes"
+    per_probe_timeout_seconds: int = 120
+    overrides: dict = Field(default_factory=dict)
+
+
+class FixersConfig(BaseModel):
+    enabled: List[str] = Field(default_factory=lambda: [
+        "dependency_bump",
+        "lint_autofix",
+        "format_autofix",
+        "test_flake_retry",
+        "stale_branch_prune",
+        "doc_link_check",
+    ])
+    user_fixers_dir: str = ".auto-heal/fixers"
+
+
+class GoalsConfig(BaseModel):
+    path: str = "GOALS.md"
+    decompose_interval_hours: int = 24
+    decompose_on_change: bool = True
+    max_features_per_decompose: int = 3
+
+
+class EscalationConfig(BaseModel):
+    max_same_issue_rounds: int = 3
+    upgrade_threshold: int = 3
+    low_cooldown_seconds: int = 21600
+    medium_cooldown_seconds: int = 3600
+
+
+class KpiMonitorConfig(BaseModel):
+    enabled: bool = True
+    check_interval_hours: int = 24
+    degrade_ratio: float = 0.8
+    baseline_window_days: int = 30
+    metrics: List[dict] = Field(default_factory=list)  # KPI-shaped dicts
+
+
+class SelfGrowthConfig(BaseModel):
+    enabled: bool = False
+    allowed_paths: List[str] = Field(default_factory=lambda: [
+        "auto_heal/probes/builtin/",
+        "auto_heal/fixers/builtin/",
+        "auto_heal/agents/prompts/templates/",
+        "auto_heal/agents/prompts/snippets.py",
+    ])
+    kernel_modification: Literal["pr_with_two_approvals", "never_allowed"] = (
+        "pr_with_two_approvals"
+    )
+    test_command: str = "pytest -x tests/unit"
+
+
+# ────────────────────────────────────────────────────────────────────────────────
+# Top-level
+# ────────────────────────────────────────────────────────────────────────────────
+
+
+class AutoHealConfig(BaseModel):
+    """Top-level ``.auto-heal.yml`` schema."""
+    model_config = ConfigDict(extra="allow")
+
+    version: int = 1
+    mode: Literal["daemon", "once", "dry-run"] = "daemon"
+    interval_seconds: int = 300
+    state_dir: str = ".auto-heal"
+    log_dir: str = ".auto-heal/logs"
+    write_mode: Literal["pr"] = "pr"
+    pr: PrConfig = Field(default_factory=PrConfig)
+    agent: AgentConfig = Field(default_factory=AgentConfig)
+    storage: StorageConfig = Field(default_factory=StorageConfig)
+    github: GitHubConfig = Field(default_factory=GitHubConfig)
+    probes: ProbesConfig = Field(default_factory=ProbesConfig)
+    fixers: FixersConfig = Field(default_factory=FixersConfig)
+    goals: GoalsConfig = Field(default_factory=GoalsConfig)
+    escalation: EscalationConfig = Field(default_factory=EscalationConfig)
+    kpi_monitor: KpiMonitorConfig = Field(default_factory=KpiMonitorConfig)
+    self_growth: SelfGrowthConfig = Field(default_factory=SelfGrowthConfig)
+
+
+__all__ = [
+    "AgentConfig",
+    "AutoHealConfig",
+    "EscalationConfig",
+    "FixersConfig",
+    "GitHubConfig",
+    "GoalsConfig",
+    "KpiMonitorConfig",
+    "PrConfig",
+    "ProbesConfig",
+    "QoderCliConfig",
+    "RemoteStorageConfig",
+    "SelfGrowthConfig",
+    "SqliteConfig",
+    "StorageConfig",
+]

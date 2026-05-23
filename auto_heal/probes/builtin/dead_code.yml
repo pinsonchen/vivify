@@ -1,0 +1,38 @@
+id: dead_code
+description: Detect likely-dead Python / TypeScript symbols via vulture / ts-prune.
+enabled_by_default: false
+remediation_hint: |
+  Confirm with `grep -R` before deleting — vulture has false positives on
+  decorator-registered code. When safe, remove the symbol along with its
+  tests in the same PR.
+
+config_overrides:
+  threshold: 50
+
+collect:
+  steps:
+    - shell: |
+        if command -v vulture >/dev/null 2>&1 && [ -d . ]; then
+          vulture . --min-confidence 80 2>/dev/null | wc -l | tr -d ' '
+        else echo 0; fi
+      as: vulture_count
+      coerce: int
+      timeout_seconds: 120
+    - shell: |
+        if [ -f tsconfig.json ] && command -v npx >/dev/null 2>&1; then
+          npx --no-install ts-prune 2>/dev/null | wc -l | tr -d ' '
+        else echo 0; fi
+      as: tsprune_count
+      coerce: int
+      timeout_seconds: 120
+
+analyze:
+  rules:
+    - when: "(vulture_count + tsprune_count) > config.threshold"
+      emit:
+        category: dead_code
+        level: LOW
+        title: "{{ vulture_count + tsprune_count }} potentially dead symbols"
+        data:
+          vulture: "{{ vulture_count }}"
+          tsprune: "{{ tsprune_count }}"

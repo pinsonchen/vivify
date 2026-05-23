@@ -1,0 +1,43 @@
+# Feature verification prompt — confirms a deployed feature actually works.
+
+# auto-heal feature verification
+
+The following feature has been merged via PR. Confirm the change is functional
+and end-user visible. **This is a read-only verification pass** — do not edit
+files or open additional PRs.
+
+## Feature
+- **ID**: {{ feature.id }}
+- **Title**: {{ feature.title }}
+{% if feature.commit_hash -%}
+- **Commit**: `{{ feature.commit_hash }}`
+{%- endif %}
+{% if feature.pr_url -%}
+- **PR**: {{ feature.pr_url }}
+{%- endif %}
+
+**Description (what should now work)**
+{{ feature.description }}
+
+{% if feature.development_result -%}
+**What the developer reported**
+{{ feature.development_result }}
+
+{% endif -%}
+## How to verify
+- Inspect the relevant code paths to confirm the implementation matches.
+- If a test suite covers the area, run it and report pass/fail.
+- If runtime behaviour is observable (HTTP endpoint, CLI flag, metric), poke
+  it and capture the response.
+
+## Output (strict)
+
+End your response with a fenced ```json``` block matching this schema:
+
+```json
+{
+  "verified": true,
+  "summary": "1-3 sentence summary of what you checked and what you saw",
+  "issues": ["any concrete problems found, empty array if none"]
+}
+```

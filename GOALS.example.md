@@ -1,0 +1,24 @@
+---
+version: 1
+owner: "@your-team"
+review_cadence: weekly
+---
+
+# Project Goals
+
+This file is read by `auto-heal goals decompose` to derive concrete
+FeatureRequests on a schedule. Each goal must declare at least one KPI.
+
+## Goal: Reduce CI flakiness
+Make CI failures real failures — every red build should reflect a real bug.
+
+- KPI: ci_pass_rate target=>=98% direction=up unit=%
+- KPI: median_ci_duration target=<=8min direction=down unit=min
+- Deadline: 2025-Q4
+- Notes: Focus on integration tests; do not silently skip.
+
+## Goal: Increase test coverage
+Cover the critical paths first; raise the floor steadily.
+
+- KPI: line_coverage target=>=80% direction=up unit=%
+- KPI: branch_coverage target=>=70% direction=up unit=%

@@ -1,0 +1,55 @@
+id: github_issue_backlog
+description: Track open-issue count and aging of P0 issues via `gh issue list`.
+enabled_by_default: true
+remediation_hint: |
+  Sort the backlog by age + label; close stale issues, triage missing labels,
+  and convert the oldest unresolved ones into auto-heal FeatureRequests with
+  `auto-heal features` so the kernel can attempt them.
+
+config_overrides:
+  open_count_threshold: 50
+  p0_age_threshold_days: 3
+
+collect:
+  steps:
+    - shell: |
+        gh issue list --state open --limit 500 --json number 2>/dev/null \
+          | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" || echo 0
+      as: open_count
+      coerce: int
+      timeout_seconds: 30
+    - shell: |
+        gh issue list --state open --label P0 --limit 100 --json createdAt 2>/dev/null \
+          | python3 -c "
+        import sys, json, datetime, time
+        now = datetime.datetime.now(datetime.timezone.utc)
+        old = 0
+        for it in json.load(sys.stdin):
+            try:
+                created = datetime.datetime.fromisoformat(it['createdAt'].replace('Z','+00:00'))
+                if (now - created).days >= {{ config.p0_age_threshold_days }}:
+                    old += 1
+            except Exception:
+                pass
+        print(old)
+        " 2>/dev/null || echo 0
+      as: stale_p0
+      coerce: int
+      timeout_seconds: 30
+
+analyze:
+  rules:
+    - when: "open_count > config.open_count_threshold"
+      emit:
+        category: issue_backlog_large
+        level: HIGH
+        title: "Open issue backlog at {{ open_count }} (threshold {{ config.open_count_threshold }})"
+        data:
+          open_count: "{{ open_count }}"
+    - when: "stale_p0 > 0"
+      emit:
+        category: issue_backlog_p0_stale
+        level: HIGH
+        title: "{{ stale_p0 }} P0 issues older than {{ config.p0_age_threshold_days }} days"
+        data:
+          stale_p0: "{{ stale_p0 }}"

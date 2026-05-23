@@ -1,0 +1,37 @@
+id: pytest_failures
+description: Run the project's pytest suite (quietly) and detect failing tests.
+enabled_by_default: false
+remediation_hint: |
+  Reproduce locally with `pytest -k <name> -x -vv`. Failing tests that match a
+  real product bug should be escalated as bug FeatureRequests; persistent
+  flakes should be diagnosed (not silently re-tried) before reaching for
+  `@pytest.mark.flaky`.
+
+config_overrides:
+  pytest_args: "-q --maxfail=20"
+
+collect:
+  steps:
+    - when: "config and (config.get('pytest_args') is not none)"
+      shell: |
+        if command -v pytest >/dev/null 2>&1 && ls **/test_*.py tests/ 2>/dev/null | head -1 >/dev/null; then
+          pytest {{ config.pytest_args }} 2>&1 | tail -n 5 || true
+        else echo "no pytest"; fi
+      as: pytest_tail
+      coerce: string
+      timeout_seconds: 600
+    - shell: |
+        echo "{{ pytest_tail }}" | grep -oE '[0-9]+ failed' | head -1 | awk '{print $1+0}' || echo 0
+      as: failed_count
+      coerce: int
+
+analyze:
+  rules:
+    - when: "failed_count > 0"
+      emit:
+        category: test_failure
+        level: HIGH
+        title: "{{ failed_count }} failing tests in pytest suite"
+        description: "Tail: {{ pytest_tail | replace('\\n', ' ') | truncate(220, true) }}"
+        data:
+          failed_count: "{{ failed_count }}"

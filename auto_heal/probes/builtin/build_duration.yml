@@ -1,0 +1,64 @@
+id: build_duration
+description: Track median CI duration; flag a sustained regression versus a 30-day baseline.
+enabled_by_default: false
+remediation_hint: |
+  Profile slow jobs with `gh run view --log` and split parallelisable steps.
+  Common wins: cache dependency installs, shard tests, and remove dead jobs.
+
+config_overrides:
+  regression_ratio: 1.25   # flag when 7d median is 25% slower than 30d median
+  min_samples: 5
+
+collect:
+  steps:
+    - shell: |
+        gh run list --branch main --limit 200 --json conclusion,createdAt,updatedAt,databaseId 2>/dev/null \
+          | python3 -c "
+        import sys, json, datetime, statistics
+        now = datetime.datetime.now(datetime.timezone.utc)
+        runs = json.load(sys.stdin)
+        d7, d30 = [], []
+        for r in runs:
+            if r.get('conclusion') not in ('success', 'failure'):
+                continue
+            try:
+                a = datetime.datetime.fromisoformat(r['createdAt'].replace('Z','+00:00'))
+                b = datetime.datetime.fromisoformat(r['updatedAt'].replace('Z','+00:00'))
+            except Exception:
+                continue
+            dur = (b - a).total_seconds()
+            age = (now - a).days
+            if age <= 7: d7.append(dur)
+            if age <= 30: d30.append(dur)
+        m7 = statistics.median(d7) if d7 else 0
+        m30 = statistics.median(d30) if d30 else 0
+        print(f'{m7:.0f} {m30:.0f} {len(d7)} {len(d30)}')
+        " 2>/dev/null || echo "0 0 0 0"
+      as: stats_line
+      coerce: string
+      timeout_seconds: 60
+    - shell: |
+        echo "{{ stats_line.split()[0] if stats_line and stats_line.split() else 0 }}"
+      as: median_7d
+      coerce: float
+    - shell: |
+        echo "{{ stats_line.split()[1] if stats_line and stats_line.split()|length >= 2 else 0 }}"
+      as: median_30d
+      coerce: float
+    - shell: |
+        echo "{{ stats_line.split()[2] if stats_line and stats_line.split()|length >= 3 else 0 }}"
+      as: samples_7d
+      coerce: int
+
+analyze:
+  rules:
+    - when: "samples_7d >= config.min_samples and median_30d > 0 and median_7d >= (median_30d * config.regression_ratio)"
+      emit:
+        category: ci_build_slowdown
+        level: LOW
+        title: "CI median duration up {{ '%.0f' | format((median_7d/median_30d - 1) * 100) }}% (7d vs 30d)"
+        description: "7d median: {{ median_7d|int }}s, 30d median: {{ median_30d|int }}s."
+        data:
+          median_7d_s: "{{ median_7d|int }}"
+          median_30d_s: "{{ median_30d|int }}"
+          samples_7d: "{{ samples_7d }}"

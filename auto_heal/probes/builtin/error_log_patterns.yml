@@ -1,0 +1,37 @@
+id: error_log_patterns
+description: Count Traceback / ERROR / panic occurrences in configured log paths.
+enabled_by_default: false
+remediation_hint: |
+  Group errors by stack trace prefix; fix the most frequent first. If a
+  particular log spam is benign, lower its severity at source rather than
+  silencing the probe.
+
+config_overrides:
+  log_glob: "logs/*.log"
+  threshold: 5
+  lookback_hours: 24
+
+collect:
+  steps:
+    - shell: |
+        set -e
+        glob="{{ config.log_glob }}"
+        if ! ls -1 $glob >/dev/null 2>&1; then echo 0; exit 0; fi
+        find $glob -mmin -$(({{ config.lookback_hours }}*60)) -type f 2>/dev/null \
+          | xargs -r grep -cE 'Traceback|ERROR|panic:' 2>/dev/null \
+          | awk -F: '{s+=$NF} END{print s+0}'
+      as: error_count
+      coerce: int
+      timeout_seconds: 60
+
+analyze:
+  rules:
+    - when: "error_count > config.threshold"
+      emit:
+        category: error_log_spike
+        level: MEDIUM
+        title: "{{ error_count }} errors/tracebacks in {{ config.log_glob }} (last {{ config.lookback_hours }}h)"
+        description: "Surface and fix the most frequent error pattern; see the rest in logs."
+        data:
+          error_count: "{{ error_count }}"
+          log_glob: "{{ config.log_glob }}"

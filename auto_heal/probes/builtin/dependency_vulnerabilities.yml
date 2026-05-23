@@ -1,0 +1,43 @@
+id: dependency_vulnerabilities
+description: Detect known CVEs in Python or JavaScript dependency tree.
+enabled_by_default: true
+remediation_hint: |
+  Prefer bumping vulnerable packages to the lowest patch release that fixes
+  the advisory. For transitive vulns, pin via overrides (npm) or constraints
+  (pip-tools) so the rest of the lockfile stays stable.
+
+config_overrides:
+  high_threshold: 0     # any high-severity vuln triggers an issue
+
+collect:
+  steps:
+    - shell: |
+        if command -v pip-audit >/dev/null 2>&1 && [ -f pyproject.toml -o -f requirements.txt ]; then
+          pip-audit --format json 2>/dev/null \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print(sum(1 for v in d.get('vulnerabilities', []) if (v.get('severity') or '').lower() in ('high','critical')))" \
+            2>/dev/null || echo 0
+        else echo 0; fi
+      as: python_high
+      coerce: int
+      timeout_seconds: 120
+    - shell: |
+        if [ -f package.json ] && command -v npm >/dev/null 2>&1; then
+          npm audit --json 2>/dev/null \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); m=d.get('metadata',{}).get('vulnerabilities',{}); print(m.get('high',0)+m.get('critical',0))" \
+            2>/dev/null || echo 0
+        else echo 0; fi
+      as: js_high
+      coerce: int
+      timeout_seconds: 120
+
+analyze:
+  rules:
+    - when: "(python_high + js_high) > config.high_threshold"
+      emit:
+        category: dependency_vulnerabilities
+        level: HIGH
+        title: "{{ python_high + js_high }} high/critical dependency vulnerabilities"
+        description: "Resolve via dependency bumps; consider the dependency_bump fixer."
+        data:
+          python_high: "{{ python_high }}"
+          js_high: "{{ js_high }}"

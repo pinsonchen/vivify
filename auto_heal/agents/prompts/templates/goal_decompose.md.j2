@@ -1,0 +1,82 @@
+# Goal-to-Feature decomposition prompt — turns a Goal into FeatureSpecs.
+
+# auto-heal goal decomposition
+
+Given a project goal and current state, propose **independently actionable**
+new feature requests that move the project closer to the goal. Do not edit
+code; this is a planning pass only.
+
+## Goal: {{ goal.name }}
+{% if goal.description -%}
+{{ goal.description }}
+
+{% endif -%}
+{% if goal.kpis -%}
+**KPIs**
+{% for kpi in goal.kpis -%}
+- `{{ kpi.name }}` — target {{ kpi.target }} (direction: {{ kpi.direction }}{% if kpi.unit %}, unit: {{ kpi.unit }}{% endif %})
+{% endfor %}
+{%- endif %}
+{% if goal.deadline -%}
+**Deadline**: {{ goal.deadline }}
+{%- endif %}
+
+{% if kpi_status -%}
+## Current KPI status
+{{ kpi_status }}
+
+{% endif -%}
+{% if recent_snapshots -%}
+## Recent KPI snapshots (last 30 days)
+{{ recent_snapshots }}
+
+{% endif -%}
+{% if open_features -%}
+## Open feature requests (avoid duplicating these)
+{% for fr in open_features -%}
+- #{{ fr.id }} [{{ fr.status }}] {{ fr.title }}
+{% endfor %}
+{%- endif %}
+
+## Repository overview
+- Default branch: `{{ repo_state.default_branch }}`
+{% if repo_state.languages -%}
+- Languages: {{ repo_state.languages | join(", ") }}
+{%- endif %}
+{% if repo_state.top_level_paths -%}
+- Top-level: {{ repo_state.top_level_paths | join(", ") }}
+{%- endif %}
+{% if repo_state.recent_commits -%}
+- Recent commits:
+{% for line in repo_state.recent_commits -%}
+  - {{ line }}
+{% endfor -%}
+{%- endif %}
+
+## Output (strict)
+
+End your response with a fenced ```json``` block matching this schema:
+
+```json
+{
+  "new_features": [
+    {
+      "title": "≤80 char title",
+      "description": "≤500 char description, why + what + acceptance criteria",
+      "type": "feature|bug|optimization",
+      "priority": "P0|P1|P2|P3",
+      "parent_goal": "{{ goal.name }}"
+    }
+  ],
+  "skipped_goals": [
+    {"name": "{{ goal.name }}", "reason": "<short>"}
+  ]
+}
+```
+
+Rules:
+
+- **Maximum {{ max_features }} features** per goal per round.
+- Each feature must be independently actionable (don't bundle multiple ideas).
+- Skip the goal entirely (`new_features: []`, populate `skipped_goals`) if its
+  KPIs are already met or there's a closely related open feature in flight.

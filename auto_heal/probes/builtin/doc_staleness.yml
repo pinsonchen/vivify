@@ -1,0 +1,39 @@
+id: doc_staleness
+description: Flag README / top-level docs that have not been updated in N days.
+enabled_by_default: false
+remediation_hint: |
+  Walk through the README sections; remove references to deprecated commands,
+  refresh setup instructions, and bump version strings. The `doc_link_check`
+  fixer can repair broken hyperlinks automatically.
+
+config_overrides:
+  stale_days: 90
+  docs_glob: "README.md docs/*.md"
+
+collect:
+  steps:
+    - shell: |
+        threshold=$(({{ config.stale_days }}*86400))
+        now=$(date +%s)
+        stale=0
+        for f in {{ config.docs_glob }}; do
+          [ -f "$f" ] || continue
+          mtime=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo $now)
+          age=$((now - mtime))
+          [ "$age" -gt "$threshold" ] && stale=$((stale + 1))
+        done
+        echo $stale
+      as: stale_count
+      coerce: int
+      timeout_seconds: 30
+
+analyze:
+  rules:
+    - when: "stale_count > 0"
+      emit:
+        category: doc_staleness
+        level: LOW
+        title: "{{ stale_count }} documentation files not updated in {{ config.stale_days }} days"
+        data:
+          stale_count: "{{ stale_count }}"
+          stale_days: "{{ config.stale_days }}"

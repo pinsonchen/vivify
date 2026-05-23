@@ -1,0 +1,32 @@
+id: ci_status
+description: Detect recent failed CI runs on the default branch via `gh run list`.
+enabled_by_default: true
+remediation_hint: |
+  Inspect the failed runs locally with `gh run view <id> --log-failed` and
+  reproduce the failing job before patching. Prefer fixing the underlying
+  flake over silently skipping the test.
+
+config_overrides:
+  max_failures: 1
+  lookback_count: 10
+
+collect:
+  steps:
+    - shell: |
+        gh run list --branch main --limit {{ config.lookback_count }} --json conclusion -q \
+          '[.[] | select(.conclusion == "failure")] | length' 2>/dev/null || echo 0
+      as: failure_count
+      coerce: int
+      timeout_seconds: 30
+
+analyze:
+  rules:
+    - when: "failure_count > config.max_failures"
+      emit:
+        category: ci_failure
+        level: HIGH
+        title: "{{ failure_count }} failed CI runs on default branch (last {{ config.lookback_count }})"
+        description: "Recent main-branch CI failures suggest a regression or flaky test."
+        data:
+          failure_count: "{{ failure_count }}"
+          lookback: "{{ config.lookback_count }}"

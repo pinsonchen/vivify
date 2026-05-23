@@ -1,0 +1,44 @@
+# Feature development prompt — implements an approved feature inside a worktree.
+{% if recent_history -%}
+{{ recent_history }}
+
+{% endif -%}
+# auto-heal feature development
+
+## Feature
+- **ID**: {{ feature.id }}
+- **Type**: {{ feature.type }}
+- **Priority**: {{ feature.priority or "unspecified" }}
+{% if feature.parent_goal -%}
+- **Parent goal**: {{ feature.parent_goal }}
+{%- endif %}
+- **Title**: {{ feature.title }}
+
+**Description**
+{{ feature.description }}
+
+{% if feature.implementation_approach -%}
+**Approved approach (from evaluation)**
+{{ feature.implementation_approach }}
+
+{% endif -%}
+{% if related_knowledge -%}
+## Related past work
+{{ related_knowledge }}
+
+{% endif -%}
+## Workspace
+You are inside an isolated git worktree (`{{ workspace }}`). The branch is
+already created and tracks origin. **Never push to the base branch** — push
+your branch and let the kernel open a PR.
+
+## Plan of action
+1. Read enough of the codebase to understand the affected areas.
+2. Implement the change end-to-end (code + tests + minimal docs).
+3. Run the project's tests / linters; iterate until they pass.
+4. `git add -A && git commit -m "auto-heal: <one-line summary>"`.
+5. `git push -u origin "$(git rev-parse --abbrev-ref HEAD)"`.
+
+{{ git_pr_snippet }}
+
+{{ next_steps_snippet }}

@@ -1,0 +1,52 @@
+# Feature evaluation prompt — read-only triage of a candidate feature request.
+
+# auto-heal feature evaluation
+
+You are evaluating whether and how to implement the following feature request.
+**This is a read-only analysis pass** — do not write any code, do not commit.
+
+## Feature
+- **ID**: {{ feature.id }}
+- **Type**: {{ feature.type }}
+{% if feature.parent_goal -%}
+- **Parent goal**: {{ feature.parent_goal }}
+{%- endif %}
+{% if feature.parent_id -%}
+- **Parent feature**: #{{ feature.parent_id }}
+{%- endif %}
+- **Title**: {{ feature.title }}
+
+**Description**
+{{ feature.description }}
+
+{% if repo_summary -%}
+## Repository at a glance
+{{ repo_summary }}
+
+{% endif -%}
+{% if related_knowledge -%}
+## Related knowledge from past work
+{{ related_knowledge }}
+
+{% endif -%}
+## Output (strict)
+
+End your response with a fenced ```json``` block matching this schema:
+
+```json
+{
+  "priority": "P0|P1|P2|P3",
+  "feasible": true,
+  "feasibility": "1-2 sentences on whether the change is realistic this round",
+  "summary": "1-3 sentence executive summary of the proposed plan",
+  "needs_admin_review": false,
+  "estimated_effort_hours": 4,
+  "affected_files_count": 6,
+  "technical_complexity": "low|medium|high",
+  "risks": ["short risk #1", "short risk #2"],
+  "implementation_approach": "concrete step-by-step plan, paths and APIs to touch"
+}
+```
+
+Set `needs_admin_review: true` if the change is large, ambiguous, or has
+notable risk and you want a human to confirm before development starts.

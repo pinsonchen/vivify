@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "auto-heal-cli"
+version = "0.1.0"
+description = "Self-growing intelligent extension that mounts to any GitHub repo: monitors health, fixes issues, decomposes goals into features, and iterates with Qoder CLI via PR mode."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "auto-heal contributors" }]
+keywords = ["self-healing", "ai-agent", "qodercli", "github", "automation", "self-growth"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = [
+    "pydantic>=2.5",
+    "PyYAML>=6.0",
+    "Jinja2>=3.1",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+auto-heal = "auto_heal.cli.main:cli"
+
+[project.urls]
+Homepage = "https://github.com/auto-heal/auto-heal"
+Documentation = "https://github.com/auto-heal/auto-heal/tree/main/docs"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["auto_heal*"]
+exclude = ["tests*"]
+
+[tool.setuptools.package-data]
+auto_heal = [
+    "probes/builtin/*.yml",
+    "storage/migrations/*.sql",
+    "agents/prompts/templates/*.j2",
+    "templates/*.tmpl",
+    "templates/probes/*",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]

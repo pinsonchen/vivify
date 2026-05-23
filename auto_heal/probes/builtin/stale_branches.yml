@@ -1,0 +1,34 @@
+id: stale_branches
+description: Detect remote branches that haven't been updated in N days.
+enabled_by_default: false
+remediation_hint: |
+  Confirm the branch is merged or abandoned before pruning. The
+  `stale_branch_prune` fixer can delete already-merged branches automatically;
+  unmerged branches should go through a PR review.
+
+config_overrides:
+  stale_days: 90
+  threshold: 20
+
+collect:
+  steps:
+    - shell: |
+        threshold=$(({{ config.stale_days }}*86400))
+        now=$(date +%s)
+        git fetch --prune --quiet 2>/dev/null || true
+        git for-each-ref refs/remotes/origin --format='%(committerdate:unix) %(refname:short)' 2>/dev/null \
+          | awk -v now=$now -v thr=$threshold '$1 < (now - thr) && $2 !~ /HEAD$/ {c++} END {print c+0}'
+      as: stale_count
+      coerce: int
+      timeout_seconds: 30
+
+analyze:
+  rules:
+    - when: "stale_count > config.threshold"
+      emit:
+        category: stale_branches
+        level: LOW
+        title: "{{ stale_count }} stale remote branches (>{{ config.stale_days }} days)"
+        data:
+          stale_count: "{{ stale_count }}"
+          stale_days: "{{ config.stale_days }}"

@@ -1,0 +1,55 @@
+id: lint_typecheck
+description: Run ruff / mypy / eslint / tsc if available and count errors.
+enabled_by_default: true
+remediation_hint: |
+  Apply `lint_autofix` / `format_autofix` first; for genuine type errors,
+  read the offending function carefully — silencing with `# type: ignore`
+  is almost never the right answer.
+
+config_overrides:
+  threshold: 0
+
+collect:
+  steps:
+    - shell: |
+        if command -v ruff >/dev/null 2>&1 && [ -f pyproject.toml ]; then
+          ruff check . --output-format concise 2>/dev/null | wc -l | tr -d ' '
+        else echo 0; fi
+      as: ruff_count
+      coerce: int
+      timeout_seconds: 120
+    - shell: |
+        if command -v mypy >/dev/null 2>&1 && [ -f mypy.ini -o -f pyproject.toml ]; then
+          mypy . 2>/dev/null | grep -c 'error:' || echo 0
+        else echo 0; fi
+      as: mypy_count
+      coerce: int
+      timeout_seconds: 180
+    - shell: |
+        if [ -f package.json ] && command -v npx >/dev/null 2>&1; then
+          npx --no-install eslint . -f compact 2>/dev/null | grep -cE 'Error -' || echo 0
+        else echo 0; fi
+      as: eslint_count
+      coerce: int
+      timeout_seconds: 180
+    - shell: |
+        if [ -f tsconfig.json ] && command -v npx >/dev/null 2>&1; then
+          npx --no-install tsc --noEmit 2>&1 | grep -c 'error TS' || echo 0
+        else echo 0; fi
+      as: tsc_count
+      coerce: int
+      timeout_seconds: 180
+
+analyze:
+  rules:
+    - when: "(ruff_count + mypy_count + eslint_count + tsc_count) > config.threshold"
+      emit:
+        category: lint_typecheck
+        level: MEDIUM
+        title: "{{ ruff_count + mypy_count + eslint_count + tsc_count }} lint/type errors"
+        description: "ruff={{ ruff_count }}, mypy={{ mypy_count }}, eslint={{ eslint_count }}, tsc={{ tsc_count }}"
+        data:
+          ruff: "{{ ruff_count }}"
+          mypy: "{{ mypy_count }}"
+          eslint: "{{ eslint_count }}"
+          tsc: "{{ tsc_count }}"

@@ -1,0 +1,55 @@
+# Fix issue prompt — used for any Issue that direct-fix fixers can't resolve.
+{% if recent_history -%}
+{{ recent_history }}
+
+{% endif -%}
+# auto-heal task: fix detected issue
+
+## Issue
+- **Category**: {{ issue.category }}
+- **Severity**: {{ issue.level }}
+- **Title**: {{ issue.title }}
+- **Detected by probe**: {{ issue.source_probe }}
+- **Hash**: `{{ issue.hash }}` (deduplication key — do not change)
+
+{% if issue.description -%}
+**Description**:
+{{ issue.description }}
+{%- endif %}
+
+{% if issue.data -%}
+**Diagnostic payload**:
+```json
+{{ issue.data | tojson(indent=2) }}
+```
+{%- endif %}
+
+{% if remediation_hint -%}
+{{ remediation_hint }}
+
+{% endif -%}
+{% if auth_block -%}
+{{ auth_block }}
+
+{% endif -%}
+## Workspace
+You are inside an isolated git worktree (`{{ workspace }}`) created off the
+default branch. The worktree is yours — feel free to install dependencies,
+run linters, run the test suite, etc. **Do not** mutate files outside this
+worktree.
+
+## Goal
+Make the smallest, most targeted change that resolves the issue above. Avoid
+unrelated refactors. After editing, prove the fix:
+
+1. Run any relevant scripts or tests that exercise the affected code path.
+2. Capture the before/after signal in your final response so the verifier can
+   confirm.
+
+{{ git_pr_snippet }}
+
+{% if self_improve_snippet -%}
+{{ self_improve_snippet }}
+
+{% endif -%}
+{{ next_steps_snippet }}

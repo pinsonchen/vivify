@@ -1,0 +1,42 @@
+id: repo_size
+description: Detect repository bloat (oversized `.git` directory or worktree).
+enabled_by_default: false
+remediation_hint: |
+  Run `git gc --aggressive`; check for accidentally-committed binaries with
+  `git rev-list --objects --all | sort -k 2 | uniq -f 1 -d`. Consider git-lfs
+  for legitimate large assets.
+
+config_overrides:
+  warn_mb: 500
+  critical_mb: 2000
+
+collect:
+  steps:
+    - shell: |
+        du -sm .git 2>/dev/null | awk '{print $1}' || echo 0
+      as: git_mb
+      coerce: int
+      timeout_seconds: 30
+    - shell: |
+        du -sm . 2>/dev/null | awk '{print $1}' || echo 0
+      as: total_mb
+      coerce: int
+      timeout_seconds: 30
+
+analyze:
+  rules:
+    - when: "git_mb >= config.critical_mb or total_mb >= (config.critical_mb * 2)"
+      emit:
+        category: repo_bloat_critical
+        level: HIGH
+        title: "Repository bloated: .git={{ git_mb }}MB, total={{ total_mb }}MB"
+        data:
+          git_mb: "{{ git_mb }}"
+          total_mb: "{{ total_mb }}"
+    - when: "git_mb >= config.warn_mb and git_mb < config.critical_mb"
+      emit:
+        category: repo_bloat_warn
+        level: LOW
+        title: ".git directory at {{ git_mb }}MB (warn threshold {{ config.warn_mb }}MB)"
+        data:
+          git_mb: "{{ git_mb }}"
