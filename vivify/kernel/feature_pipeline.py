@@ -219,12 +219,35 @@ class FeaturePipeline:
 
             commit_info = parsers.parse_commit_info(output, repo_url=self.config.repo_url)
             decision = classify_worktree(wt.path, base_ref=wt.base_ref)
-            pr = self.pr_creator.push_and_open(
-                wt,
-                title=feature.title[:200],
-                body=self._render_pr_body(feature, output=output, quality=quality),
-                decision=decision,
-            )
+            try:
+                pr = self.pr_creator.push_and_open(
+                    wt,
+                    title=feature.title[:200],
+                    body=self._render_pr_body(feature, output=output, quality=quality),
+                    decision=decision,
+                )
+            except Exception as pr_err:
+                # PR creation can fail for transient reasons (missing
+                # GH_TOKEN in the subprocess env, gh quota, label issues,
+                # network blips, ...). Mark the feature as
+                # ``deployed_with_issues`` so the next run can retry it,
+                # rather than letting the exception bubble up to the
+                # outer ``except`` which would reject the feature outright.
+                logger.error(
+                    "PR creation failed for feature #%s: %s", feature.id, pr_err,
+                )
+                self._update(
+                    feature, status="deployed_with_issues",
+                    development_result=(
+                        f"PR creation failed: {pr_err}"
+                    )[:2000],
+                )
+                # NB: the outer ``finally`` already emits an ActionLog for
+                # ``feature_develop`` based on ``report.status``; don't
+                # duplicate it here.
+                report.status = "deployed_with_issues"
+                report.error = f"pr_create: {pr_err}"
+                return
             report.pr = pr
             self._update(
                 feature, status="deployed",

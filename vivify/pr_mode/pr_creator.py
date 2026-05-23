@@ -7,6 +7,7 @@ flow through this module.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -41,6 +42,12 @@ class PrCreatorConfig:
 
 def _run(cmd: Sequence[str], *, cwd: Path | str, timeout: int = 60,
          env: Optional[dict] = None) -> subprocess.CompletedProcess:
+    # Explicitly inherit the current process environment so that secrets such
+    # as ``GH_TOKEN`` (injected by the daemon manager into ``os.environ`` of
+    # this process) reliably reach ``git`` / ``gh`` subprocesses, regardless
+    # of how this process itself was started.
+    if env is None:
+        env = os.environ.copy()
     return subprocess.run(
         list(cmd), cwd=str(cwd), capture_output=True, text=True,
         timeout=timeout, env=env,
@@ -48,6 +55,18 @@ def _run(cmd: Sequence[str], *, cwd: Path | str, timeout: int = 60,
 
 
 _PR_URL_RE = re.compile(r"https?://[^\s]+/pull/(\d+)")
+
+
+def _looks_like_missing_label(stderr: str | None) -> bool:
+    """Heuristic: gh prints messages like ``could not add label: 'vivify' not found``.
+
+    We match loosely on "label" + "not found" (case-insensitive) so the retry
+    fires for the common ``gh`` phrasings without being overly aggressive.
+    """
+    if not stderr:
+        return False
+    s = stderr.lower()
+    return "label" in s and "not found" in s
 
 
 def _parse_pr_url(text: str) -> tuple[Optional[int], str]:
@@ -125,6 +144,34 @@ class PrCreator:
             cmd.append("--draft")
 
         result = _run(cmd, cwd=worktree.path, timeout=self.config.gh_timeout_seconds)
+
+        # Tolerate missing labels on the remote: if ``gh`` rejects the PR
+        # creation because one of the requested labels does not exist, retry
+        # once with all ``--label`` arguments stripped. This avoids hard
+        # failures on fresh repos that haven't had vivify labels created yet.
+        if result.returncode != 0 and _looks_like_missing_label(result.stderr):
+            logger.warning(
+                "Label not found on remote, retrying gh pr create without labels: %s",
+                (result.stderr or "").strip()[:300],
+            )
+            cmd_retry: list[str] = []
+            skip_next = False
+            for arg in cmd:
+                if skip_next:
+                    skip_next = False
+                    continue
+                if arg == "--label":
+                    skip_next = True
+                    continue
+                cmd_retry.append(arg)
+            result = _run(
+                cmd_retry, cwd=worktree.path,
+                timeout=self.config.gh_timeout_seconds,
+            )
+            if result.returncode == 0:
+                # Reflect the retry outcome in the returned PullRequest.
+                labels = []
+
         try:
             body_path.unlink(missing_ok=True)
         except Exception:  # pragma: no cover — cleanup only
