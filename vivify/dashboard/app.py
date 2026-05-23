@@ -1,15 +1,143 @@
 """Vivify Dashboard FastAPI 应用。"""
 from __future__ import annotations
 
+import base64
+import json
+import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, Query
+import yaml
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .db import DashboardDB
 from .log_streamer import tail_log
+
+# 全局实例注册表路径
+INSTANCES_FILE = Path.home() / ".vivify" / "instances.json"
+
+
+# ────────────────────────────────────────────────────────────────
+# 辅助函数
+# ────────────────────────────────────────────────────────────────
+
+
+def _encode_instance_id(repo_path: str) -> str:
+    """将 repo 路径编码为 URL-safe instance_id。"""
+    return base64.urlsafe_b64encode(repo_path.encode()).decode().rstrip("=")
+
+
+def _decode_instance_id(instance_id: str) -> str:
+    """解码 instance_id 为 repo 路径。"""
+    padding = 4 - len(instance_id) % 4
+    if padding != 4:
+        instance_id += "=" * padding
+    return base64.urlsafe_b64decode(instance_id.encode()).decode()
+
+
+def _is_process_alive(pid: int) -> bool:
+    """检查进程是否存活。"""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def _read_vivify_config(repo_path: Path) -> dict:
+    """读取项目的 .vivify.yml 配置。"""
+    config_file = repo_path / ".vivify.yml"
+    if not config_file.exists():
+        return {}
+    try:
+        with open(config_file, encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+
+
+def _parse_goals(repo_path: Path) -> list:
+    """从 GOALS.md 提取目标标题列表。"""
+    goals_file = repo_path / "GOALS.md"
+    if not goals_file.exists():
+        return []
+    try:
+        content = goals_file.read_text(encoding="utf-8")
+    except Exception:
+        return []
+    goals = []
+    for line in content.splitlines():
+        if line.startswith("## Goal:"):
+            goals.append(line.replace("## Goal:", "").strip())
+    return goals
+
+
+def _parse_goals_detailed(repo_path: Path) -> tuple[str, list]:
+    """从 GOALS.md 提取完整内容和结构化目标列表。"""
+    goals_file = repo_path / "GOALS.md"
+    if not goals_file.exists():
+        return "", []
+    try:
+        content = goals_file.read_text(encoding="utf-8")
+    except Exception:
+        return "", []
+    goals_list = []
+    current_goal = None
+    for line in content.splitlines():
+        if line.startswith("## Goal:"):
+            if current_goal:
+                goals_list.append(current_goal)
+            current_goal = {"title": line.replace("## Goal:", "").strip(), "kpis": [], "deadline": ""}
+        elif current_goal:
+            stripped = line.strip()
+            if stripped.startswith("- KPI:") or stripped.startswith("- kpi:"):
+                current_goal["kpis"].append(stripped.replace("- KPI:", "").replace("- kpi:", "").strip())
+            elif stripped.lower().startswith("deadline:"):
+                current_goal["deadline"] = stripped.split(":", 1)[1].strip()
+    if current_goal:
+        goals_list.append(current_goal)
+    return content, goals_list
+
+
+def _get_instance_db(repo_path: Path) -> Optional[DashboardDB]:
+    """为指定实例创建只读 DashboardDB 连接。"""
+    state_dir = repo_path / ".vivify"
+    db_path = state_dir / "state.db"
+    if not db_path.exists():
+        return None
+    try:
+        return DashboardDB(db_path)
+    except Exception:
+        return None
+
+
+def _load_instances_registry() -> list:
+    """加载全局实例注册表。"""
+    if not INSTANCES_FILE.exists():
+        return []
+    try:
+        return json.loads(INSTANCES_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def _validate_instance_path(repo_path: str) -> Path:
+    """验证 instance 路径合法且包含 .vivify 目录。"""
+    p = Path(repo_path)
+    if not p.exists():
+        raise HTTPException(status_code=404, detail=f"实例目录不存在: {repo_path}")
+    if not (p / ".vivify").is_dir():
+        raise HTTPException(status_code=404, detail=f"实例未初始化（缺少 .vivify 目录）: {repo_path}")
+    return p
 
 
 def create_app(state_dir: Optional[Path] = None) -> FastAPI:
@@ -149,6 +277,202 @@ def create_app(state_dir: Optional[Path] = None) -> FastAPI:
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    # --- 多实例 API 端点 ---
+
+    # 记录当前实例的 repo 路径（由 state_dir 反推）
+    _current_repo = state_dir.parent.resolve() if state_dir else Path.cwd().resolve()
+
+    @app.get("/api/instances")
+    async def list_instances():
+        """列出本机所有已知的 vivify 实例及其初始化信息。"""
+        registry = _load_instances_registry()
+        instances = []
+        for entry in registry:
+            repo = entry.get("repo", "")
+            pid = entry.get("pid", 0)
+            started_at = entry.get("started_at", "")
+            repo_path = Path(repo)
+
+            # 验证进程存活
+            daemon_running = _is_process_alive(pid) if pid else False
+
+            # 计算 uptime
+            uptime_seconds = None
+            if daemon_running and started_at:
+                try:
+                    start_dt = datetime.fromisoformat(started_at)
+                    uptime_seconds = (datetime.now(timezone.utc) - start_dt).total_seconds()
+                except (ValueError, TypeError):
+                    uptime_seconds = None
+
+            # 读取配置
+            config = _read_vivify_config(repo_path)
+            project = config.get("project", {})
+
+            # 读取目标
+            goals = _parse_goals(repo_path)
+
+            # 获取最新 action 和 kpi
+            last_action = None
+            kpi_score = None
+            instance_db = _get_instance_db(repo_path)
+            if instance_db:
+                try:
+                    status_info = instance_db.get_status()
+                    last_action = status_info.get("last_action")
+                    # 获取最新 KPI 快照
+                    kpi_rows = instance_db.get_kpi_snapshots(limit=1)
+                    if kpi_rows:
+                        kpi_score = kpi_rows[0].get("score")
+                finally:
+                    instance_db.close()
+
+            instances.append({
+                "id": _encode_instance_id(repo),
+                "repo": repo,
+                "project_name": project.get("name", repo_path.name),
+                "scenario": project.get("type", "generic"),
+                "language": project.get("language", ""),
+                "framework": project.get("framework", ""),
+                "deploy_url": project.get("deploy_url", ""),
+                "goals": goals,
+                "daemon_running": daemon_running,
+                "daemon_pid": pid if daemon_running else None,
+                "uptime_seconds": uptime_seconds,
+                "last_action": last_action,
+                "kpi_score": kpi_score,
+                "state_dir": str(repo_path / ".vivify"),
+            })
+
+        return {
+            "instances": instances,
+            "current_instance": _encode_instance_id(str(_current_repo)),
+        }
+
+    @app.get("/api/instances/{instance_id}/config")
+    async def get_instance_config(instance_id: str):
+        """获取指定实例的完整初始化配置。"""
+        try:
+            repo_str = _decode_instance_id(instance_id)
+        except Exception:
+            raise HTTPException(status_code=400, detail="无效的 instance_id")
+
+        repo_path = _validate_instance_path(repo_str)
+        config = _read_vivify_config(repo_path)
+        goals_md, goals_list = _parse_goals_detailed(repo_path)
+
+        # 获取初始化时间
+        vivify_dir = repo_path / ".vivify"
+        initialized_at = None
+        try:
+            stat = vivify_dir.stat()
+            initialized_at = datetime.fromtimestamp(stat.st_ctime, tz=timezone.utc).isoformat()
+        except OSError:
+            pass
+
+        return {
+            "repo": repo_str,
+            "config": config,
+            "goals_md": goals_md,
+            "goals_list": goals_list,
+            "state_dir": str(vivify_dir),
+            "initialized_at": initialized_at,
+        }
+
+    @app.get("/api/instances/{instance_id}/status")
+    async def get_instance_status(instance_id: str):
+        """获取指定实例的运行状态。"""
+        try:
+            repo_str = _decode_instance_id(instance_id)
+        except Exception:
+            raise HTTPException(status_code=400, detail="无效的 instance_id")
+
+        repo_path = _validate_instance_path(repo_str)
+        instance_state_dir = repo_path / ".vivify"
+
+        # 检测 daemon 状态
+        pid_file = instance_state_dir / "vivify.pid"
+        daemon_running = False
+        daemon_pid = None
+        if pid_file.exists():
+            try:
+                pid = int(pid_file.read_text(encoding="utf-8").strip())
+                if _is_process_alive(pid):
+                    daemon_running = True
+                    daemon_pid = pid
+            except (ValueError, OSError):
+                pass
+
+        instance_db = _get_instance_db(repo_path)
+        if not instance_db:
+            return {
+                "daemon_running": daemon_running,
+                "daemon_pid": daemon_pid,
+                "last_action": None,
+                "latest_round": None,
+            }
+
+        try:
+            status_info = instance_db.get_status()
+            rounds = instance_db.get_rounds(limit=1)
+            return {
+                "daemon_running": daemon_running,
+                "daemon_pid": daemon_pid,
+                "last_action": status_info.get("last_action"),
+                "latest_round": rounds[0] if rounds else None,
+            }
+        finally:
+            instance_db.close()
+
+    @app.get("/api/instances/{instance_id}/actions")
+    async def get_instance_actions(
+        instance_id: str,
+        limit: int = Query(50, le=200),
+        category: Optional[str] = None,
+        action_type: Optional[str] = None,
+        since: Optional[str] = None,
+    ):
+        """获取指定实例的操作日志。"""
+        try:
+            repo_str = _decode_instance_id(instance_id)
+        except Exception:
+            raise HTTPException(status_code=400, detail="无效的 instance_id")
+
+        repo_path = _validate_instance_path(repo_str)
+        instance_db = _get_instance_db(repo_path)
+        if not instance_db:
+            return []
+
+        try:
+            return instance_db.get_recent_actions(
+                limit=limit, category=category, action_type=action_type, since=since
+            )
+        finally:
+            instance_db.close()
+
+    @app.get("/api/instances/{instance_id}/kpi/snapshots")
+    async def get_instance_kpi(
+        instance_id: str,
+        since: Optional[str] = None,
+        source: Optional[str] = None,
+        limit: int = Query(100, le=500),
+    ):
+        """获取指定实例的 KPI 快照。"""
+        try:
+            repo_str = _decode_instance_id(instance_id)
+        except Exception:
+            raise HTTPException(status_code=400, detail="无效的 instance_id")
+
+        repo_path = _validate_instance_path(repo_str)
+        instance_db = _get_instance_db(repo_path)
+        if not instance_db:
+            return []
+
+        try:
+            return instance_db.get_kpi_snapshots(since=since, source=source, limit=limit)
+        finally:
+            instance_db.close()
 
     # --- 前端静态文件 ---
 
