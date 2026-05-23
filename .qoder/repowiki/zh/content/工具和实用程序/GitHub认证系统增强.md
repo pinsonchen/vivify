@@ -7,6 +7,11 @@
 - [.vivify.example.yml](file://.vivify.example.yml)
 - [vivify/__main__.py](file://vivify/__main__.py)
 - [vivify/cli/main.py](file://vivify/cli/main.py)
+- [vivify/cli/init_cmd.py](file://vivify/cli/init_cmd.py)
+- [vivify/cli/doctor_cmd.py](file://vivify/cli/doctor_cmd.py)
+- [vivify/config/schema.py](file://vivify/config/schema.py)
+- [vivify/config/loader.py](file://vivify/config/loader.py)
+- [vivify/dashboard/app.py](file://vivify/dashboard/app.py)
 - [vivify/reporter/github_issue_reporter.py](file://vivify/reporter/github_issue_reporter.py)
 - [vivify/interfaces/reporter.py](file://vivify/interfaces/reporter.py)
 - [vivify/models/snapshot.py](file://vivify/models/snapshot.py)
@@ -17,18 +22,30 @@
 - [vivify/pr_mode/quality_check.py](file://vivify/pr_mode/quality_check.py)
 - [vivify/kernel/feature_pipeline.py](file://vivify/kernel/feature_pipeline.py)
 - [vivify/config/defaults.py](file://vivify/config/defaults.py)
+- [vivify/deployers/command.py](file://vivify/deployers/command.py)
+- [vivify/daemon/manager.py](file://vivify/daemon/manager.py)
+- [tests/unit/test_qodercli_agent.py](file://tests/unit/test_qodercli_agent.py)
 </cite>
+
+## 更新摘要
+**所做更改**
+- 新增实例级别GitHub认证令牌配置章节，详细说明层次化配置系统
+- 更新认证优先级机制，展示实例令牌优先于全局配置
+- 新增实例级令牌配置的最佳实践和迁移指南
+- 更新认证流程图，反映新的层次化配置架构
+- 新增故障排除指南中关于实例配置的问题解决
 
 ## 目录
 1. [简介](#简介)
 2. [项目结构](#项目结构)
 3. [核心组件](#核心组件)
 4. [架构概览](#架构概览)
-5. [详细组件分析](#详细组件分析)
-6. [依赖关系分析](#依赖关系分析)
-7. [性能考虑](#性能考虑)
-8. [故障排除指南](#故障排除指南)
-9. [结论](#结论)
+5. [GitHub认证系统增强](#github认证系统增强)
+6. [详细组件分析](#详细组件分析)
+7. [依赖关系分析](#依赖关系分析)
+8. [性能考虑](#性能考虑)
+9. [故障排除指南](#故障排除指南)
+10. [结论](#结论)
 
 ## 简介
 
@@ -42,6 +59,8 @@ GitHub认证系统增强是一个基于Python的智能自动化系统，专为Gi
 - **自生长能力**：AI可以优化自身的探针和修复器
 - **质量门控**：严格的预PR质量检查确保代码质量
 - **问题镜像**：高严重性事件自动镜像到GitHub Issues
+- **增强认证系统**：支持多种认证方式和层次化配置管理
+- **实例级别令牌配置**：从全局配置转向实例级别的细粒度控制
 
 ### 技术栈
 
@@ -99,9 +118,9 @@ A --> U
 
 系统通过命令行接口提供统一的入口点，支持多种操作模式：
 
-- **初始化**：`vivify init` - 交互式项目初始化
+- **初始化**：`vivify init` - 交互式项目初始化，包含增强的认证配置流程
 - **运行模式**：`vivify run` - 守护进程模式
-- **诊断**：`vivify doctor` - 环境验证
+- **诊断**：`vivify doctor` - 环境验证，检查认证配置状态
 - **功能管理**：`vivify features` - 特性请求管理
 - **探针管理**：`vivify probes` - 探针测试和启用
 - **修复器管理**：`vivify fixers` - 修复器测试和启用
@@ -197,6 +216,168 @@ O --> Q
 - [vivify/kernel/feature_pipeline.py:79-379](file://vivify/kernel/feature_pipeline.py#L79-L379)
 - [vivify/pr_mode/worktree.py:43-176](file://vivify/pr_mode/worktree.py#L43-L176)
 - [vivify/pr_mode/pr_creator.py:63-178](file://vivify/pr_mode/pr_creator.py#L63-L178)
+
+## GitHub认证系统增强
+
+### 层次化认证配置系统
+
+系统实现了全新的层次化认证配置架构，支持从实例级别到全局级别的多层配置管理：
+
+```mermaid
+flowchart TD
+Start([开始认证配置]) --> CheckInstance["检查实例级别配置 (.vivify.yml)"]
+CheckInstance --> HasInstanceToken{"实例令牌存在?"}
+HasInstanceToken --> |是| InstancePriority["实例令牌优先 ✓"]
+HasInstanceToken --> |否| CheckEnv["检查环境变量配置"]
+CheckEnv --> HasEnvToken{"环境变量令牌存在?"}
+HasEnvToken --> |是| EnvPriority["环境变量令牌 ✓"]
+HasEnvToken --> |否| CheckGlobal["检查全局配置 (~/.vivify/env)"]
+CheckGlobal --> HasGlobalToken{"全局令牌存在?"}
+HasGlobalToken --> |是| GlobalPriority["全局令牌 ✓"]
+HasGlobalToken --> |否| NoAuth["认证缺失"]
+NoAuth --> PromptUser["提示用户输入Token"]
+PromptUser --> SaveEnv["保存到 ~/.vivify/env"]
+SaveEnv --> InstancePriority
+InstancePriority --> End([完成])
+EnvPriority --> End
+GlobalPriority --> End
+```
+
+**图表来源**
+- [vivify/daemon/manager.py:72-93](file://vivify/daemon/manager.py#L72-L93)
+- [vivify/dashboard/app.py:175-212](file://vivify/dashboard/app.py#L175-L212)
+
+### 实例级别令牌配置
+
+系统现在支持在项目级别的`.vivify.yml`文件中直接配置GitHub令牌，提供更高的灵活性和安全性：
+
+```mermaid
+classDiagram
+class GitHubConfig {
++enabled : bool
++repo : str
++token_env : str
++token : str
++mirror_issues : bool
+}
+class InstanceConfig {
++github : GitHubConfig
++实例令牌优先级 : "最高"
++环境变量令牌 : "中等"
++全局令牌 : "最低"
+}
+GitHubConfig <|-- InstanceConfig
+```
+
+**图表来源**
+- [vivify/config/schema.py:67-73](file://vivify/config/schema.py#L67-L73)
+- [vivify/cli/init_cmd.py:201-211](file://vivify/cli/init_cmd.py#L201-L211)
+
+#### 实例配置参数
+
+| 参数名称 | 类型 | 默认值 | 描述 | 优先级 |
+|---------|------|--------|------|--------|
+| github.enabled | bool | True | 是否启用GitHub集成 | 低 |
+| github.repo | str | "" | GitHub仓库名称，为空时自动检测 | 低 |
+| github.token_env | str | "GH_TOKEN" | 环境变量名 | 中等 |
+| github.token | str | "" | 实例级别令牌 | **最高** |
+| github.mirror_issues | bool | True | 是否镜像问题到GitHub Issues | 低 |
+
+**更新** 新增了`github.token`参数，支持实例级别的直接令牌配置，优先级最高
+
+**章节来源**
+- [vivify/config/schema.py:67-73](file://vivify/config/schema.py#L67-L73)
+- [.vivify.example.yml:35-40](file://.vivify.example.yml#L35-L40)
+
+### 认证优先级机制
+
+系统实现了明确的认证令牌优先级机制，确保配置的一致性和可预测性：
+
+```mermaid
+sequenceDiagram
+participant App as 应用程序
+participant Daemon as 守护进程
+participant InstanceCfg as 实例配置
+participant EnvCfg as 环境变量
+participant GlobalCfg as 全局配置
+participant GitHub as GitHub API
+App->>Daemon : 启动应用程序
+Daemon->>InstanceCfg : 读取 .vivify.yml
+InstanceCfg-->>Daemon : 返回实例令牌
+Daemon->>EnvCfg : 检查环境变量
+EnvCfg-->>Daemon : 返回环境令牌
+Daemon->>GlobalCfg : 检查全局配置
+GlobalCfg-->>Daemon : 返回全局令牌
+Daemon->>GitHub : 使用最高优先级令牌认证
+GitHub-->>Daemon : 认证成功
+Daemon-->>App : 返回认证状态
+```
+
+**图表来源**
+- [vivify/daemon/manager.py:72-93](file://vivify/daemon/manager.py#L72-L93)
+- [vivify/dashboard/app.py:175-212](file://vivify/dashboard/app.py#L175-L212)
+
+#### 优先级规则
+
+1. **实例级别令牌** (`github.token`) - **最高优先级**
+   - 直接写入项目配置文件
+   - 适用于单个项目或特定环境
+   - 支持不同的令牌名称映射
+
+2. **环境变量令牌** (`GH_TOKEN`或其他自定义名称)
+   - 通过`token_env`参数配置
+   - 适用于CI/CD环境和容器部署
+   - 支持多环境分离
+
+3. **全局令牌** (`~/.vivify/env`)
+   - 传统配置方式
+   - 适用于多个项目的共享配置
+   - 作为最后的回退选项
+
+**章节来源**
+- [vivify/daemon/manager.py:72-93](file://vivify/daemon/manager.py#L72-L93)
+- [vivify/dashboard/app.py:175-212](file://vivify/dashboard/app.py#L175-L212)
+
+### 环境文件管理
+
+系统支持通过`~/.vivify/env`文件管理全局认证配置，同时保留实例级别的优先级：
+
+```mermaid
+flowchart TD
+EnvFile["~/.vivify/env 文件"] --> ParseEnv["解析环境变量"]
+ParseEnv --> MergeEnv["合并到进程环境"]
+MergeEnv --> LoadConfig["加载 .vivify.yml 配置"]
+LoadConfig --> CheckInstance["检查实例令牌"]
+CheckInstance --> HasInstance{"实例令牌存在?"}
+HasInstance --> |是| UseInstance["使用实例令牌"]
+HasInstance --> |否| UseEnv["使用环境令牌"]
+UseInstance --> ApplyOverrides["应用环境变量覆盖"]
+UseEnv --> ApplyOverrides
+ApplyOverrides --> Ready["认证就绪"]
+```
+
+**图表来源**
+- [vivify/deployers/command.py:66-77](file://vivify/deployers/command.py#L66-L77)
+- [vivify/cli/init_cmd.py:204-221](file://vivify/cli/init_cmd.py#L204-L221)
+
+**章节来源**
+- [vivify/deployers/command.py:66-77](file://vivify/deployers/command.py#L66-L77)
+- [vivify/cli/init_cmd.py:204-221](file://vivify/cli/init_cmd.py#L204-L221)
+
+### 认证验证机制
+
+系统提供多种认证验证方式，支持层次化配置的完整验证：
+
+1. **实例配置验证**：检查`.vivify.yml`中的`github.token`配置
+2. **环境变量验证**：检查`token_env`指定的环境变量
+3. **全局配置验证**：检查`~/.vivify/env`文件中的认证信息
+4. **实时状态检查**：在运行时动态验证认证状态
+
+**更新** 新增了实例配置验证，确保层次化配置的正确性
+
+**章节来源**
+- [vivify/cli/doctor_cmd.py:48-71](file://vivify/cli/doctor_cmd.py#L48-L71)
+- [vivify/dashboard/app.py:175-212](file://vivify/dashboard/app.py#L175-L212)
 
 ## 详细组件分析
 
@@ -508,6 +689,7 @@ P --> Q
 - **工作树缓存**：避免重复创建相同的工作树
 - **探针结果缓存**：减少重复的检测开销
 - **配置缓存**：避免频繁的配置文件读取
+- **认证状态缓存**：减少重复的认证检查
 
 ### 内存优化
 
@@ -521,12 +703,27 @@ P --> Q
 
 #### GitHub认证问题
 
-**症状**：`gh`命令执行失败
+**症状**：`gh`命令执行失败或PR创建失败
 **原因**：缺少`GH_TOKEN`环境变量或认证过期
 **解决方案**：
 1. 设置`GH_TOKEN`环境变量
 2. 运行`gh auth login`重新认证
 3. 验证网络连接
+4. 检查`~/.vivify/env`文件中的认证配置
+
+**更新** 增强了认证配置流程，支持多种认证方式的自动检测和切换，包括实例级别的令牌配置
+
+#### 层次化配置问题
+
+**症状**：认证配置不生效或优先级异常
+**原因**：实例配置与全局配置冲突
+**解决方案**：
+1. 检查`.vivify.yml`中的`github.token`配置
+2. 验证`token_env`参数设置
+3. 确认环境变量的优先级顺序
+4. 使用`vivify doctor`检查配置状态
+
+**新增** 关于层次化配置的专门故障排除指南
 
 #### 权限问题
 
@@ -546,20 +743,19 @@ P --> Q
 2. 减少并发操作
 3. 检查系统资源使用情况
 
-### 调试模式
+### 认证诊断工具
 
-系统提供详细的日志记录功能：
+系统提供多种认证诊断工具：
 
-- **INFO级别**：正常操作日志
-- **DEBUG级别**：详细调试信息
-- **WARNING级别**：潜在问题警告
-- **ERROR级别**：错误信息
+- **vivify doctor**：全面检查认证配置状态，支持层次化配置验证
+- **仪表板认证检查**：实时显示认证状态，区分实例、环境和全局配置
+- **初始化向导**：引导用户完成认证配置，支持实例级别令牌设置
 
-使用`-v`和`-vv`参数增加日志详细程度。
+**更新** 诊断工具现在支持层次化配置的完整验证
 
 **章节来源**
-- [vivify/reporter/github_issue_reporter.py:68-69](file://vivify/reporter/github_issue_reporter.py#L68-L69)
-- [vivify/pr_mode/auto_merge.py:89-97](file://vivify/pr_mode/auto_merge.py#L89-L97)
+- [vivify/cli/doctor_cmd.py:48-84](file://vivify/cli/doctor_cmd.py#L48-L84)
+- [vivify/dashboard/app.py:175-212](file://vivify/dashboard/app.py#L175-L212)
 
 ## 结论
 
@@ -572,6 +768,9 @@ GitHub认证系统增强提供了一个完整、安全、可扩展的自动化�
 3. **智能化**：AI驱动的代码分析和修复
 4. **可观测性**：完整的日志记录和监控
 5. **易用性**：简洁的命令行接口和配置选项
+6. **增强认证**：支持多种认证方式和层次化配置管理
+7. **实例级别控制**：提供细粒度的令牌管理能力
+8. **向后兼容**：保持与现有配置的兼容性
 
 ### 未来发展方向
 
@@ -579,5 +778,7 @@ GitHub认证系统增强提供了一个完整、安全、可扩展的自动化�
 - **多代理支持**：扩展支持其他AI编码平台
 - **Web界面**：提供图形化管理界面
 - **容器化部署**：支持Docker和Kubernetes部署
+- **认证令牌管理**：提供更完善的令牌生命周期管理
+- **配置模板系统**：支持认证配置的模板化管理
 
-该系统为现代软件开发团队提供了强大的自动化工具，能够显著提高开发效率和代码质量。
+该系统为现代软件开发团队提供了强大的自动化工具，能够显著提高开发效率和代码质量。新的层次化认证配置系统为不同规模和复杂度的项目提供了灵活的配置选择，从简单的个人项目到复杂的多环境部署场景都能得到很好的支持。

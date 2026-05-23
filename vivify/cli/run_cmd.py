@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -32,6 +33,46 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=run)
 
 
+def _load_instance_env() -> None:
+    """加载实例级和全局环境变量配置（与 daemon/manager.py 保持一致）。
+
+    前台 ``vivify run`` / ``vivify run --once`` 不会经过 DaemonManager.start()，
+    需在进入 kernel 之前手动加载同样的环境变量，否则 GH_TOKEN 等不可用。
+    """
+    # 1. 全局 fallback：~/.vivify/env
+    env_file = Path.home() / ".vivify" / "env"
+    if env_file.exists():
+        try:
+            for line in env_file.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, _, value = line.partition("=")
+                    os.environ.setdefault(key.strip(), value.strip())
+        except OSError:
+            pass
+
+    # 2. 实例配置优先：.vivify.yml 中的 github.token
+    config_path = Path(".vivify.yml")
+    if config_path.exists():
+        try:
+            import yaml  # 延迟导入，避免启动顺序的硬依赖
+            with open(config_path, encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            gh_cfg = cfg.get("github", {}) or {}
+            instance_token = gh_cfg.get("token", "") or ""
+            if instance_token:
+                os.environ["GH_TOKEN"] = instance_token
+            token_env_name = gh_cfg.get("token_env", "GH_TOKEN") or "GH_TOKEN"
+            if (
+                token_env_name != "GH_TOKEN"
+                and os.environ.get(token_env_name)
+                and not os.environ.get("GH_TOKEN")
+            ):
+                os.environ["GH_TOKEN"] = os.environ[token_env_name]
+        except Exception:
+            pass  # 配置读取失败不影响启动
+
+
 def _build_agent(cfg) -> QoderCliAgent:
     qc = cfg.agent.qodercli
     bin_cfg = AgentBinConfig(
@@ -48,6 +89,7 @@ def _build_agent(cfg) -> QoderCliAgent:
 
 
 def run(args: argparse.Namespace) -> int:
+    _load_instance_env()
     cfg = load_config(getattr(args, "config", None))
     log_level = logging.INFO if args.verbose < 2 else logging.DEBUG
     if args.verbose == 0:
