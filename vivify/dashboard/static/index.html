@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vivify Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+</head>
+<body>
+    <header>
+        <div class="header-left">
+            <h1>复元·Vivify</h1>
+            <span id="status-indicator" class="status-dot offline"></span>
+            <span id="status-text">离线</span>
+        </div>
+        <div class="header-right">
+            <span id="project-info"></span>
+        </div>
+    </header>
+
+    <nav class="tabs">
+        <button class="tab active" data-tab="overview">概览</button>
+        <button class="tab" data-tab="issues">问题</button>
+        <button class="tab" data-tab="actions">动作</button>
+        <button class="tab" data-tab="features">特性</button>
+        <button class="tab" data-tab="trends">趋势</button>
+    </nav>
+
+    <main>
+        <!-- 概览 Tab -->
+        <section id="tab-overview" class="tab-content active">
+            <div class="cards">
+                <div class="card">
+                    <h3>守护状态</h3>
+                    <div id="daemon-status">-</div>
+                </div>
+                <div class="card">
+                    <h3>最新轮次</h3>
+                    <div id="latest-round">-</div>
+                </div>
+                <div class="card">
+                    <h3>操作统计</h3>
+                    <div id="action-stats">-</div>
+                </div>
+                <div class="card">
+                    <h3>特性进度</h3>
+                    <div id="feature-stats">-</div>
+                </div>
+            </div>
+            <div class="log-panel">
+                <h3>实时日志</h3>
+                <div id="log-stream" class="log-container"></div>
+            </div>
+        </section>
+
+        <!-- 问题 Tab -->
+        <section id="tab-issues" class="tab-content">
+            <div class="toolbar">
+                <select id="issue-level-filter">
+                    <option value="">所有级别</option>
+                    <option value="CRITICAL">CRITICAL</option>
+                    <option value="HIGH">HIGH</option>
+                    <option value="MEDIUM">MEDIUM</option>
+                    <option value="LOW">LOW</option>
+                </select>
+                <select id="issue-category-filter">
+                    <option value="">所有分类</option>
+                </select>
+            </div>
+            <table id="issues-table">
+                <thead>
+                    <tr><th>级别</th><th>分类</th><th>标题</th><th>时间</th><th>状态</th></tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </section>
+
+        <!-- 动作 Tab -->
+        <section id="tab-actions" class="tab-content">
+            <div class="toolbar">
+                <select id="action-type-filter">
+                    <option value="">所有类型</option>
+                    <option value="detect">检测</option>
+                    <option value="direct_fix">直接修复</option>
+                    <option value="heal">AI修复</option>
+                    <option value="feature_dev">特性开发</option>
+                    <option value="goal_decompose">目标分解</option>
+                </select>
+            </div>
+            <div id="actions-timeline" class="timeline"></div>
+        </section>
+
+        <!-- 特性 Tab -->
+        <section id="tab-features" class="tab-content">
+            <div class="kanban">
+                <div class="kanban-col" data-status="pending">
+                    <h4>待处理</h4>
+                    <div class="kanban-cards"></div>
+                </div>
+                <div class="kanban-col" data-status="developing">
+                    <h4>开发中</h4>
+                    <div class="kanban-cards"></div>
+                </div>
+                <div class="kanban-col" data-status="deployed">
+                    <h4>已部署</h4>
+                    <div class="kanban-cards"></div>
+                </div>
+                <div class="kanban-col" data-status="verified">
+                    <h4>已验证</h4>
+                    <div class="kanban-cards"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 趋势 Tab -->
+        <section id="tab-trends" class="tab-content">
+            <div class="chart-container">
+                <canvas id="kpi-chart"></canvas>
+            </div>
+            <div class="chart-container">
+                <canvas id="actions-chart"></canvas>
+            </div>
+        </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
