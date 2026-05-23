@@ -45,7 +45,11 @@ class SSHDeployer(Deployer):
 
     def _deploy_rsync(self, host: str, user: str, remote_path: str, ssh_key: str) -> DeployResult:
         """使用 rsync 同步文件"""
-        source = str(self.repo_root) + "/"
+        source_dir = self.config.get("source_dir", "")
+        if source_dir:
+            source = str(self.repo_root / source_dir) + "/"
+        else:
+            source = str(self.repo_root) + "/"
         dest = f"{user}@{host}:{remote_path}" if user else f"{host}:{remote_path}"
 
         cmd = ["rsync", "-avz", "--delete"]
@@ -56,7 +60,7 @@ class SSHDeployer(Deployer):
         cmd.extend(["--exclude", ".vivify/", "--exclude", ".git/"])
         cmd.extend([source, dest])
 
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300, errors='replace')
 
         if proc.returncode == 0:
             return DeployResult(
@@ -79,7 +83,7 @@ class SSHDeployer(Deployer):
         ssh_cmd.append(target)
         ssh_cmd.append(f"cd {remote_path} && git pull origin main")
 
-        proc = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=120)
+        proc = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=120, errors='replace')
 
         if proc.returncode == 0:
             return DeployResult(

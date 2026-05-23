@@ -34,14 +34,18 @@ class Deployer(ABC):
         """部署后健康检查：检测 URL 是否可达且返回 200"""
         import urllib.request
         import urllib.error
+        import ssl
 
         # 等待部署生效
         wait_seconds = self.config.get("post_deploy_wait_seconds", 30)
         time.sleep(wait_seconds)
 
         try:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
             req = urllib.request.Request(deploy_url, method="HEAD")
-            resp = urllib.request.urlopen(req, timeout=timeout)
+            resp = urllib.request.urlopen(req, timeout=timeout, context=ctx)
             return resp.status == 200
         except (urllib.error.URLError, urllib.error.HTTPError, OSError):
             return False

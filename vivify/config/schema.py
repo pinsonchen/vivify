@@ -160,6 +160,7 @@ class DeployConfig(BaseModel):
     ssh_path: str = ""
     ssh_key: str = ""                         # SSH 私钥路径
     ssh_mode: str = "rsync"                   # rsync | git_pull
+    source_dir: str = ""                      # 同步源子目录（相对于项目根），为空则同步整个项目
     # 自定义命令
     deploy_command: str = ""
     deploy_timeout_seconds: int = 300
