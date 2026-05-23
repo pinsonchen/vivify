@@ -1,13 +1,11 @@
 """Tests for ``vivify.pr_mode`` — pr_creator + auto_merge."""
 from __future__ import annotations
 
-import subprocess
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from vivify.pr_mode.auto_merge import AutoMerge, AutoMergeConfig, MergeOutcome
+from vivify.pr_mode.auto_merge import AutoMerge, AutoMergeConfig
 from vivify.pr_mode.pr_creator import (
     PrCreator,
     PrCreatorConfig,

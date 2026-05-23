@@ -17,6 +17,7 @@ DEFAULT_BUILTIN_PROBES: tuple[str, ...] = (
     "dead_code",
     "stale_branches",
     "secrets_scan",
+    "site_health",
 )
 
 DEFAULT_BUILTIN_FIXERS: tuple[str, ...] = (

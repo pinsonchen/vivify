@@ -147,6 +147,22 @@ class DaemonConfig(BaseModel):
     log_stdout: bool = False               # daemon 模式是否将 stdout 写入日志
 
 
+class ProjectConfig(BaseModel):
+    """项目元数据配置，由 vivify init 智能分析自动填充。"""
+
+    name: str = ""
+    description: str = ""
+    type: str = "generic"          # ScenarioType 值: static-site, web-app, api-service, python-package, cli-tool, docs-only, mobile-app, monorepo, infra, generic
+    language: str = ""             # 主要编程语言
+    framework: str = ""            # 主框架 (react, vue, django, flask, etc.)
+    deploy_url: str = ""           # 部署地址 (如 https://example.com)
+    deploy_method: str = "manual"  # manual | github-pages | vercel | netlify | ssh
+    health_endpoint: str = ""      # 健康检查端点 (API 服务用, 如 /health)
+    test_command: str = ""         # 测试命令 (如 pytest, npm test)
+    build_command: str = ""        # 构建命令 (如 npm run build)
+    dev_command: str = ""          # 开发服务命令 (如 npm run dev)
+
+
 # ────────────────────────────────────────────────────────────────────────────────
 # Top-level
 # ────────────────────────────────────────────────────────────────────────────────
@@ -173,6 +189,7 @@ class VivifyConfig(BaseModel):
     kpi_monitor: KpiMonitorConfig = Field(default_factory=KpiMonitorConfig)
     self_growth: SelfGrowthConfig = Field(default_factory=SelfGrowthConfig)
     daemon: DaemonConfig = Field(default_factory=DaemonConfig)
+    project: ProjectConfig = Field(default_factory=ProjectConfig)
 
 
 __all__ = [
@@ -186,6 +203,7 @@ __all__ = [
     "KpiMonitorConfig",
     "PrConfig",
     "ProbesConfig",
+    "ProjectConfig",
     "QoderCliConfig",
     "RemoteStorageConfig",
     "SelfGrowthConfig",

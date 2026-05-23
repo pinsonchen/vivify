@@ -1,0 +1,51 @@
+id: site_health
+description: "检测部署站点的可达性和响应时间"
+enabled_by_default: false
+config:
+  timeout_seconds: 10
+  expected_status: 200
+  max_response_time: 5.0
+
+collect:
+  steps:
+    - shell: "curl -s -o /dev/null -w '%{http_code} %{time_total}' --max-time  config.timeout_seconds  ' config.project.deploy_url '"
+      as: raw_response
+      timeout_seconds: 15
+      when: "config.project.deploy_url"
+    - shell: "echo ' raw_response ' | awk '{print $1}'"
+      as: status_code
+      coerce: int
+      when: "raw_response is defined"
+    - shell: "echo ' raw_response ' | awk '{print $2}'"
+      as: response_time
+      coerce: float
+      when: "raw_response is defined"
+
+analyze:
+  rules:
+    - when: "raw_response is not defined"
+      emit:
+        category: site_health
+        level: LOW
+        title: "站点健康检查跳过: 未配置 deploy_url"
+        description: "请在 .vivify.yml 的 project.deploy_url 中配置部署地址。"
+    - when: "raw_response is defined and status_code != config.expected_status"
+      emit:
+        category: site_health
+        level: CRITICAL
+        title: "站点不可达:  config.project.deploy_url  (HTTP  status_code )"
+        description: "部署站点返回 HTTP  status_code ，期望  config.expected_status 。请检查部署状态。"
+        data:
+          url: " config.project.deploy_url "
+          actual_status: " status_code "
+          expected_status: " config.expected_status "
+    - when: "raw_response is defined and status_code == config.expected_status and response_time > config.max_response_time"
+      emit:
+        category: site_health
+        level: HIGH
+        title: "站点响应过慢:  config.project.deploy_url  ( response_time s)"
+        description: "响应时间  response_time s 超过阈值  config.max_response_time s。"
+        data:
+          url: " config.project.deploy_url "
+          response_time: " response_time "
+          threshold: " config.max_response_time "

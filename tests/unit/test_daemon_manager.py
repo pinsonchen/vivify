@@ -1,16 +1,14 @@
 """Tests for vivify.daemon module."""
 from __future__ import annotations
 
-import json
 import os
-import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from vivify.daemon.lock import InstanceLock
-from vivify.daemon.manager import DaemonManager, DaemonStatus
+from vivify.daemon.manager import DaemonManager
 
 
 class TestInstanceLock:
