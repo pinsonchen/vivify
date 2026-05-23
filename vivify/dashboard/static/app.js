@@ -19,6 +19,7 @@
         setupTabs();
         loadInstances();
         loadStatus();
+        loadConfigHealth();
         connectLogStream();
         setInterval(loadStatus, 5000);    // 每 5 秒刷新状态
         setInterval(loadInstances, 30000); // 每 30 秒刷新实例列表
@@ -46,6 +47,7 @@
 
     function onTabSwitch(tab) {
         switch(tab) {
+            case 'overview': loadConfigHealth(); break;
             case 'instances': renderInstancesPanel(); break;
             case 'issues': loadIssues(); break;
             case 'actions': loadActions(); break;
@@ -350,7 +352,10 @@
         // 刷新当前 Tab 数据
         onTabSwitch(currentTab);
         // 如果当前在概览 Tab，也刷新状态
-        if (currentTab === 'overview') loadStatus();
+        if (currentTab === 'overview') {
+            loadStatus();
+            loadConfigHealth();
+        }
         renderInstancesPanel();
     }
 
@@ -454,6 +459,77 @@
         if (seconds < 3600) return Math.floor(seconds / 60) + '分钟';
         if (seconds < 86400) return Math.floor(seconds / 3600) + '小时';
         return Math.floor(seconds / 86400) + '天';
+    }
+
+    // --- 配置完整性检查 ---
+    async function loadConfigHealth() {
+        const base = getApiBase();
+        try {
+            const resp = await fetch(base + '/config/health');
+            if (!resp.ok) return;
+            const data = await resp.json();
+            renderConfigHealth(data);
+        } catch (e) {
+            console.error('Failed to load config health:', e);
+        }
+    }
+
+    function renderConfigHealth(data) {
+        const summary = document.getElementById('config-health-summary');
+        const checksEl = document.getElementById('config-health-checks');
+        if (!summary || !checksEl) return;
+
+        const scoreClass = data.score >= 80 ? 'score-high' : data.score >= 50 ? 'score-mid' : 'score-low';
+        const scoreColor = data.score >= 80 ? 'var(--success)' : data.score >= 50 ? 'var(--warning)' : 'var(--danger)';
+
+        summary.innerHTML = `
+            <div class="config-score">
+                <div class="config-score-bar">
+                    <div class="config-score-fill ${scoreClass}" style="width:${data.score}%"></div>
+                </div>
+                <span class="config-score-text" style="color:${scoreColor}">${data.score}%</span>
+            </div>
+            <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.5rem">
+                ${data.passed}/${data.total_checks} 项检查通过
+                ${data.complete
+                    ? ' &middot; <span style="color:var(--success)">配置完整</span>'
+                    : ' &middot; <span style="color:var(--warning)">需要完善</span>'}
+            </div>
+        `;
+
+        // 按类别分组，有问题的类别优先显示
+        const categories = {};
+        data.checks.forEach(c => {
+            const cat = c.category || '其他';
+            if (!categories[cat]) categories[cat] = [];
+            categories[cat].push(c);
+        });
+
+        const sortedCats = Object.keys(categories).sort((a, b) => {
+            const aIssue = categories[a].some(c => c.status !== 'ok') ? 0 : 1;
+            const bIssue = categories[b].some(c => c.status !== 'ok') ? 0 : 1;
+            return aIssue - bIssue;
+        });
+
+        let html = '';
+        for (const cat of sortedCats) {
+            html += `<div class="config-category-label">${cat}</div>`;
+            html += '<div class="config-checks-grid">';
+            for (const check of categories[cat]) {
+                const icon = check.status === 'ok' ? '✓' : check.status === 'warning' ? '⚠' : '✗';
+                html += `
+                    <div class="config-check-item status-${check.status}">
+                        <span class="config-check-icon">${icon}</span>
+                        <div class="config-check-content">
+                            <div class="config-check-name">${check.name}</div>
+                            <div class="config-check-message">${check.message}</div>
+                            ${check.fix_hint ? `<div class="config-check-hint">💡 ${check.fix_hint}</div>` : ''}
+                        </div>
+                    </div>`;
+            }
+            html += '</div>';
+        }
+        checksEl.innerHTML = html;
     }
 
     // 将 switchInstance 暴露到全局（HTML onchange 回调需要）

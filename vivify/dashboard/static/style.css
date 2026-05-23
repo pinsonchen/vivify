@@ -303,3 +303,94 @@ td { font-size: 0.85rem; }
     background: linear-gradient(90deg, var(--danger), var(--warning), var(--success));
     transition: width 0.3s;
 }
+
+/* 配置健康度卡片 */
+.config-health-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.5rem;
+    margin-top: 1.5rem;
+}
+
+.config-health-card h3 {
+    margin: 0 0 1rem 0;
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+}
+
+.config-score {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 0.75rem;
+}
+
+.config-score-bar {
+    flex: 1;
+    height: 8px;
+    background: var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.config-score-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.5s ease;
+}
+
+.config-score-fill.score-high { background: var(--success); }
+.config-score-fill.score-mid  { background: var(--warning); }
+.config-score-fill.score-low  { background: var(--danger); }
+
+.config-score-text {
+    font-size: 1.4rem;
+    font-weight: 700;
+    min-width: 3.5rem;
+    text-align: right;
+}
+
+.config-checks-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 0.4rem;
+}
+
+.config-check-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 6px;
+    font-size: 0.85rem;
+}
+
+.config-check-item.status-ok      { color: var(--success); }
+.config-check-item.status-warning  { color: var(--warning); background: rgba(224,175,104,0.05); }
+.config-check-item.status-missing  { color: var(--danger);  background: rgba(247,118,142,0.05); }
+
+.config-check-icon  { flex-shrink: 0; margin-top: 0.1rem; font-style: normal; }
+.config-check-content { flex: 1; }
+.config-check-name  { font-weight: 500; }
+.config-check-message { font-size: 0.75rem; opacity: 0.8; margin-top: 0.15rem; }
+
+.config-check-hint {
+    font-size: 0.7rem;
+    color: var(--accent);
+    margin-top: 0.25rem;
+    font-style: italic;
+}
+
+.config-category-label {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-top: 0.75rem;
+    margin-bottom: 0.25rem;
+    padding-left: 0.75rem;
+}

@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -106,6 +107,181 @@ def _parse_goals_detailed(repo_path: Path) -> tuple[str, list]:
     if current_goal:
         goals_list.append(current_goal)
     return content, goals_list
+
+
+def _check_config_health(repo_root: Path, state_dir_path: Path) -> dict:
+    """检查项目配置完整性，返回结构化检查结果和修复建议。"""
+    checks = []
+
+    # 1. 配置文件存在性
+    config_path = repo_root / ".vivify.yml"
+    if config_path.exists():
+        checks.append({
+            "id": "config_file", "name": "配置文件", "category": "基础",
+            "status": "ok", "message": ".vivify.yml 已存在",
+        })
+        cfg = _read_vivify_config(repo_root)
+    else:
+        checks.append({
+            "id": "config_file", "name": "配置文件", "category": "基础",
+            "status": "missing", "message": ".vivify.yml 不存在",
+            "fix_hint": "运行 vivify init 初始化项目",
+        })
+        cfg = {}
+
+    project = cfg.get("project", {})
+
+    # 2. 项目名称
+    if project.get("name"):
+        checks.append({
+            "id": "project_name", "name": "项目名称", "category": "基础",
+            "status": "ok", "message": project["name"],
+        })
+    else:
+        checks.append({
+            "id": "project_name", "name": "项目名称", "category": "基础",
+            "status": "missing", "message": "未设置项目名称",
+            "fix_hint": "在 .vivify.yml 中设置 project.name",
+        })
+
+    # 3. 项目类型/场景
+    if project.get("type"):
+        checks.append({
+            "id": "project_type", "name": "场景类型", "category": "基础",
+            "status": "ok", "message": project["type"],
+        })
+    else:
+        checks.append({
+            "id": "project_type", "name": "场景类型", "category": "基础",
+            "status": "missing", "message": "未设置场景类型",
+            "fix_hint": "运行 vivify init 或设置 project.type",
+        })
+
+    # 4. qodercli 可用性
+    qodercli_bin = cfg.get("agent", {}).get("qodercli", {}).get("binary_path", "qodercli")
+    qodercli_found = shutil.which(qodercli_bin)
+    if qodercli_found:
+        checks.append({
+            "id": "qodercli", "name": "AI 智能引擎 (qodercli)", "category": "智能",
+            "status": "ok", "message": f"已就绪: {qodercli_found}",
+        })
+    else:
+        checks.append({
+            "id": "qodercli", "name": "AI 智能引擎 (qodercli)", "category": "智能",
+            "status": "missing", "message": "qodercli 未找到",
+            "fix_hint": "安装 qodercli 并确保在 PATH 中",
+        })
+
+    # 5. GH_TOKEN
+    env_file = Path.home() / ".vivify" / "env"
+    has_token_env = bool(os.environ.get("GH_TOKEN", ""))
+    has_token_file = False
+    if env_file.exists():
+        try:
+            _env_content = env_file.read_text(encoding="utf-8")
+            _parts = _env_content.split("GH_TOKEN=")
+            has_token_file = len(_parts) > 1 and len(_parts[1].split("\n")[0].strip()) > 0
+        except OSError:
+            pass
+    if has_token_env or has_token_file:
+        checks.append({
+            "id": "gh_token", "name": "GitHub 认证", "category": "集成",
+            "status": "ok", "message": "GH_TOKEN 已配置",
+        })
+    else:
+        checks.append({
+            "id": "gh_token", "name": "GitHub 认证", "category": "集成",
+            "status": "missing", "message": "GH_TOKEN 未配置，无法创建 PR",
+            "fix_hint": "运行 vivify init 配置 token，或编辑 ~/.vivify/env",
+        })
+
+    # 6. Deploy 配置
+    deploy = cfg.get("deploy", {})
+    deploy_method = deploy.get("method", project.get("deploy_method", "manual"))
+    if deploy_method and deploy_method != "manual":
+        deploy_detail = f"方式: {deploy_method}"
+        if deploy.get("ssh_host"):
+            deploy_detail += f" → {deploy['ssh_host']}"
+        checks.append({
+            "id": "deploy_method", "name": "部署方式", "category": "部署",
+            "status": "ok", "message": deploy_detail,
+        })
+    else:
+        checks.append({
+            "id": "deploy_method", "name": "部署方式", "category": "部署",
+            "status": "warning", "message": "部署方式为 manual，无法自动部署",
+            "fix_hint": "在 .vivify.yml 中配置 deploy.method (ssh/command/webhook)",
+        })
+
+    # 7. Deploy URL
+    deploy_url = project.get("deploy_url", "")
+    if deploy_url:
+        checks.append({
+            "id": "deploy_url", "name": "部署地址", "category": "部署",
+            "status": "ok", "message": deploy_url,
+        })
+    else:
+        checks.append({
+            "id": "deploy_url", "name": "部署地址", "category": "部署",
+            "status": "warning", "message": "未配置部署地址，无法验证部署结果",
+            "fix_hint": "设置 project.deploy_url 为站点访问地址",
+        })
+
+    # 8. GOALS.md
+    goals_path = repo_root / "GOALS.md"
+    if goals_path.exists() and goals_path.stat().st_size > 50:
+        _goals_content = goals_path.read_text(encoding="utf-8", errors="replace")
+        goal_count = _goals_content.count("## Goal:")
+        checks.append({
+            "id": "goals", "name": "项目目标", "category": "目标",
+            "status": "ok", "message": f"已定义 {goal_count} 个目标",
+        })
+    else:
+        checks.append({
+            "id": "goals", "name": "项目目标", "category": "目标",
+            "status": "missing", "message": "GOALS.md 未定义或为空",
+            "fix_hint": "运行 vivify init 生成目标，或手动创建 GOALS.md",
+        })
+
+    # 9. Probes 配置
+    probes_enabled = cfg.get("probes", {}).get("enabled", [])
+    if probes_enabled:
+        checks.append({
+            "id": "probes", "name": "探针配置", "category": "监控",
+            "status": "ok", "message": f"已启用 {len(probes_enabled)} 个探针",
+        })
+    else:
+        checks.append({
+            "id": "probes", "name": "探针配置", "category": "监控",
+            "status": "warning", "message": "未启用任何探针",
+            "fix_hint": "在 .vivify.yml 的 probes.enabled 中添加探针",
+        })
+
+    # 10. 状态数据库
+    db_path = state_dir_path / "state.db" if state_dir_path else None
+    if db_path and db_path.exists():
+        checks.append({
+            "id": "state_db", "name": "状态数据库", "category": "基础",
+            "status": "ok", "message": "state.db 已初始化",
+        })
+    else:
+        checks.append({
+            "id": "state_db", "name": "状态数据库", "category": "基础",
+            "status": "warning", "message": "state.db 不存在",
+            "fix_hint": "运行 vivify run --once 初始化数据库",
+        })
+
+    ok_count = sum(1 for c in checks if c["status"] == "ok")
+    total = len(checks)
+    score = int(ok_count / total * 100) if total > 0 else 0
+
+    return {
+        "complete": ok_count == total,
+        "score": score,
+        "total_checks": total,
+        "passed": ok_count,
+        "checks": checks,
+    }
 
 
 def _get_instance_db(repo_path: Path) -> Optional[DashboardDB]:
@@ -473,6 +649,21 @@ def create_app(state_dir: Optional[Path] = None) -> FastAPI:
             return instance_db.get_kpi_snapshots(since=since, source=source, limit=limit)
         finally:
             instance_db.close()
+
+    @app.get("/api/config/health")
+    async def config_health():
+        """检查当前实例的配置完整性。"""
+        return _check_config_health(_current_repo, state_dir)
+
+    @app.get("/api/instances/{instance_id}/config/health")
+    async def instance_config_health(instance_id: str):
+        """检查指定实例的配置完整性。"""
+        try:
+            repo_str = _decode_instance_id(instance_id)
+        except Exception:
+            raise HTTPException(status_code=400, detail="无效的 instance_id")
+        repo_path = _validate_instance_path(repo_str)
+        return _check_config_health(repo_path, repo_path / ".vivify")
 
     # --- 前端静态文件 ---
 
