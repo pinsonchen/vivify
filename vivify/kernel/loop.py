@@ -549,6 +549,22 @@ class Kernel:
     def _handle_features(self, *, report: RoundReport) -> None:
         if self.config.dry_run:
             return
+        pipeline = FeaturePipeline(
+            agent=self.deps.agent,
+            storage=self.deps.storage,
+            worktree_mgr=self.deps.worktrees,
+            pr_creator=self.deps.pr_creator,
+            auto_merge=self.deps.auto_merge,
+            run_id=report.run_id,
+        )
+        # Recover any features stuck in transient states from prior rounds
+        # before pulling fresh work; some may flip back into ``pending`` /
+        # ``approved`` / ``deployed`` and become eligible again this round.
+        try:
+            pipeline._detect_and_recover_timeouts()
+        except Exception as e:  # pragma: no cover
+            logger.warning("feature timeout recovery failed: %s", e)
+
         pending = []
         for status in ("pending", "approved"):
             try:
@@ -569,14 +585,6 @@ class Kernel:
         )
 
         budget = self.config.max_features_per_round
-        pipeline = FeaturePipeline(
-            agent=self.deps.agent,
-            storage=self.deps.storage,
-            worktree_mgr=self.deps.worktrees,
-            pr_creator=self.deps.pr_creator,
-            auto_merge=self.deps.auto_merge,
-            run_id=report.run_id,
-        )
         for fr in pending[:budget]:
             try:
                 fr_report = pipeline.run(fr, round_num=report.round_num)

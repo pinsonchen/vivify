@@ -118,6 +118,21 @@ class GoalsConfig(BaseModel):
     max_features_per_decompose: int = 3
 
 
+class FeaturePipelineConfig(BaseModel):
+    """Lifecycle thresholds for the feature pipeline.
+
+    Used by the kernel's per-round timeout-recovery sweep to reset features
+    that have been stuck in transient states (``evaluating`` / ``developing``
+    / ``verifying``) longer than the configured threshold. Features whose
+    ``retry_count`` reaches ``max_retries`` are auto-rejected.
+    """
+
+    evaluating_timeout_minutes: int = 10
+    developing_timeout_minutes: int = 90
+    verifying_timeout_minutes: int = 60
+    max_retries: int = 3
+
+
 class EscalationConfig(BaseModel):
     max_same_issue_rounds: int = 3
     upgrade_threshold: int = 3
@@ -219,6 +234,7 @@ class VivifyConfig(BaseModel):
     probes: ProbesConfig = Field(default_factory=ProbesConfig)
     fixers: FixersConfig = Field(default_factory=FixersConfig)
     goals: GoalsConfig = Field(default_factory=GoalsConfig)
+    feature_pipeline: FeaturePipelineConfig = Field(default_factory=FeaturePipelineConfig)
     escalation: EscalationConfig = Field(default_factory=EscalationConfig)
     kpi_monitor: KpiMonitorConfig = Field(default_factory=KpiMonitorConfig)
     self_growth: SelfGrowthConfig = Field(default_factory=SelfGrowthConfig)
@@ -233,6 +249,7 @@ __all__ = [
     "VivifyConfig",
     "DaemonConfig",
     "EscalationConfig",
+    "FeaturePipelineConfig",
     "FixersConfig",
     "GitHubConfig",
     "GoalsConfig",

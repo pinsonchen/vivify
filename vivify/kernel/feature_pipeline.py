@@ -25,6 +25,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from vivify.agents.history import load_history
@@ -331,6 +332,8 @@ class FeaturePipeline:
         round_num: int,
     ) -> None:
         start = time.time()
+        # Mark verifying so the recovery sweep can detect a stuck verify run.
+        self._update(feature, status="verifying")
         prompt = builders.build_feature_verify(feature)
         result = self.agent.heal(
             prompt,
@@ -896,6 +899,25 @@ class FeaturePipeline:
         return created
 
     def _update(self, feature: FeatureRequest, **fields) -> None:
+        # ── Task #65: auto-record lifecycle timestamps on status changes ──
+        new_status = fields.get("status")
+        if new_status:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            if new_status == "evaluating":
+                fields.setdefault("evaluated_at", now_iso)
+            elif new_status == "developing":
+                fields.setdefault("started_at", now_iso)
+            elif new_status == "verifying":
+                # mark when verification phase starts; preserve started_at
+                pass
+            elif new_status == "verified":
+                fields.setdefault("verified_at", now_iso)
+                fields.setdefault("completed_at", now_iso)
+            elif new_status == "rejected":
+                fields.setdefault("completed_at", now_iso)
+            elif new_status == "deployed_with_issues":
+                fields.setdefault("verified_at", now_iso)
+
         for k, v in fields.items():
             if hasattr(feature, k):
                 setattr(feature, k, v)
@@ -904,6 +926,102 @@ class FeaturePipeline:
                 self.storage.update_feature(feature.id, **fields)
             except Exception as e:  # pragma: no cover
                 logger.warning("update_feature(%s) failed: %s", feature.id, e)
+
+    def _update_feature_status(
+        self, feature: FeatureRequest, new_status: str, **extra_fields,
+    ) -> None:
+        """Unified status transition with automatic timestamp recording.
+
+        Thin wrapper around :meth:`_update` for callers that prefer an explicit
+        intent. Existing direct ``_update(feature, status=...)`` calls keep
+        working and still get timestamps via the same code path.
+        """
+        self._update(feature, status=new_status, **extra_fields)
+
+    # ── Task #61: timeout detection & auto-recovery ────────────────────────
+    def _detect_and_recover_timeouts(self) -> None:
+        """Reset features stuck in transient states longer than the threshold.
+
+        Iterates over features in ``evaluating`` / ``developing`` / ``verifying``
+        and, when their start timestamp is older than the configured threshold,
+        bumps ``retry_count`` and rolls them back to a recoverable status.
+        Once ``retry_count`` reaches ``config.max_retries`` the feature is
+        auto-rejected so it stops blocking the pipeline.
+        """
+        now = datetime.now(timezone.utc)
+        thresholds: dict[str, timedelta] = {
+            "evaluating": timedelta(minutes=self.config.evaluating_timeout_minutes),
+            "developing": timedelta(minutes=self.config.developing_timeout_minutes),
+            "verifying": timedelta(minutes=self.config.verifying_timeout_minutes),
+        }
+        # Roll-back targets: which status to reset a stuck feature to.
+        recovery_status: dict[str, str] = {
+            "evaluating": "pending",
+            "developing": "approved",
+            "verifying": "deployed",
+        }
+
+        for status, threshold in thresholds.items():
+            try:
+                stuck = self.storage.list_features(status=status)
+            except Exception as e:  # pragma: no cover
+                logger.debug("list_features(%s) failed: %s", status, e)
+                continue
+
+            for f in stuck:
+                started = self._extract_status_start_time(f, status)
+                if started is None:
+                    continue
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=timezone.utc)
+                if now - started <= threshold:
+                    continue
+
+                new_retry = int(getattr(f, "retry_count", 0) or 0) + 1
+                if new_retry >= self.config.max_retries:
+                    self._update(
+                        f,
+                        status="rejected",
+                        retry_count=new_retry,
+                        feasibility=(
+                            f"Auto-rejected: timed out {new_retry} times in '{status}'"
+                        ),
+                    )
+                    final_status = "rejected"
+                else:
+                    final_status = recovery_status[status]
+                    self._update(f, status=final_status, retry_count=new_retry)
+
+                logger.warning(
+                    "Feature #%d timeout in '%s' (started %s), reset to '%s' "
+                    "(retry %d/%d)",
+                    f.id, status, started.isoformat(), final_status,
+                    new_retry, self.config.max_retries,
+                )
+
+    @staticmethod
+    def _extract_status_start_time(
+        f: FeatureRequest, status: str,
+    ) -> Optional[datetime]:
+        """Best-effort start timestamp for the given transient status."""
+        if status == "evaluating":
+            candidates: list = [f.evaluated_at, f.created_at]
+        elif status == "developing":
+            candidates = [f.started_at, f.evaluated_at, f.created_at]
+        elif status == "verifying":
+            candidates = [f.verified_at, f.started_at, f.created_at]
+        else:  # pragma: no cover
+            candidates = [f.created_at]
+        for c in candidates:
+            if c is None or c == "":
+                continue
+            if isinstance(c, datetime):
+                return c
+            try:
+                return datetime.fromisoformat(str(c).rstrip("Z"))
+            except (ValueError, TypeError):
+                continue
+        return None
 
     def _log_action(self, **kw) -> None:
         feature: FeatureRequest = kw.pop("feature")
