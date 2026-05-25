@@ -128,13 +128,21 @@ class SqliteStorageProvider(StorageProvider):
                 INSERT INTO feature_requests (
                     title, description, type, parent_goal, parent_id, priority,
                     status, development_result, commit_hash, pr_url,
-                    feasibility, summary, verification_method, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    feasibility, summary, verification_method,
+                    image_urls, idea_id, retry_count, batch_commit_hash,
+                    verification_result, evaluated_at, started_at,
+                    verified_at, completed_at,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     fr.title, fr.description, fr.type, fr.parent_goal, fr.parent_id,
                     fr.priority, fr.status, fr.development_result, fr.commit_hash,
                     fr.pr_url, fr.feasibility, fr.summary, fr.verification_method,
+                    fr.image_urls, fr.idea_id, int(fr.retry_count or 0),
+                    fr.batch_commit_hash, fr.verification_result,
+                    fr.evaluated_at, fr.started_at, fr.verified_at, fr.completed_at,
                     _to_iso(fr.created_at) or _to_iso(datetime.now(timezone.utc)),
                     _to_iso(fr.updated_at) or _to_iso(datetime.now(timezone.utc)),
                 ),
@@ -173,6 +181,10 @@ class SqliteStorageProvider(StorageProvider):
             "title", "description", "type", "parent_goal", "parent_id",
             "priority", "status", "development_result", "commit_hash",
             "pr_url", "feasibility", "summary", "verification_method",
+            # migration 0003 fields
+            "image_urls", "idea_id", "retry_count", "batch_commit_hash",
+            "verification_result", "evaluated_at", "started_at",
+            "verified_at", "completed_at",
         }
         sets: list[str] = []
         values: list[Any] = []
@@ -192,11 +204,15 @@ class SqliteStorageProvider(StorageProvider):
 
     @staticmethod
     def _row_to_feature(row: sqlite3.Row) -> FeatureRequest:
-        # verification_method may not exist in older databases before migration 0002
-        try:
-            verification_method = row["verification_method"]
-        except (IndexError, KeyError):
-            verification_method = None
+        # Columns added by later migrations may not exist in older databases.
+        def _opt(col: str, default: Any = None) -> Any:
+            try:
+                return row[col]
+            except (IndexError, KeyError):
+                return default
+
+        verification_method = _opt("verification_method")
+        retry_count_raw = _opt("retry_count", 0)
         return FeatureRequest(
             id=int(row["id"]),
             title=row["title"],
@@ -212,6 +228,15 @@ class SqliteStorageProvider(StorageProvider):
             pr_url=row["pr_url"],
             feasibility=row["feasibility"] or "",
             summary=row["summary"] or "",
+            image_urls=_opt("image_urls"),
+            idea_id=_opt("idea_id"),
+            retry_count=int(retry_count_raw or 0),
+            batch_commit_hash=_opt("batch_commit_hash"),
+            verification_result=_opt("verification_result"),
+            evaluated_at=_opt("evaluated_at"),
+            started_at=_opt("started_at"),
+            verified_at=_opt("verified_at"),
+            completed_at=_opt("completed_at"),
             created_at=_from_iso(row["created_at"]) or datetime.now(timezone.utc),
             updated_at=_from_iso(row["updated_at"]) or datetime.now(timezone.utc),
         )

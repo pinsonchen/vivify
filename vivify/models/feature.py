@@ -84,5 +84,15 @@ class FeatureRequest:
     pr_url: Optional[str] = None
     feasibility: str = ""
     summary: str = ""
+    # ── channels-monitor inspired lifecycle/tracking fields (migration 0003) ──
+    image_urls: Optional[str] = None  # JSON array of URLs
+    idea_id: Optional[int] = None
+    retry_count: int = 0
+    batch_commit_hash: Optional[str] = None
+    verification_result: Optional[str] = None  # JSON string
+    evaluated_at: Optional[str] = None  # ISO format timestamp
+    started_at: Optional[str] = None
+    verified_at: Optional[str] = None
+    completed_at: Optional[str] = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
