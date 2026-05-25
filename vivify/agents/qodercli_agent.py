@@ -111,7 +111,14 @@ class QoderCliAgent(CodingAgent):
     ) -> AgentResult:
         """Execute a healing task, routing to remote or local mode as configured."""
         if self.cfg.use_remote and self._remote_mgr:
-            return self._heal_remote(prompt, workspace=workspace, max_turns=max_turns)
+            result = self._heal_remote(prompt, workspace=workspace, max_turns=max_turns)
+            if result.success:
+                return result
+            # Fallback to local execution on remote failure
+            logger.warning(
+                "Remote session failed (error=%s), falling back to local execution",
+                result.error,
+            )
         return self._heal_local(
             prompt,
             max_turns=max_turns,
@@ -142,6 +149,7 @@ class QoderCliAgent(CodingAgent):
                 session,
                 poll_interval=self.cfg.remote_poll_interval,
                 timeout=self.cfg.remote_timeout,
+                workspace=workspace,
             )
         except Exception as exc:  # create_session / network failures
             elapsed = _time.time() - t0

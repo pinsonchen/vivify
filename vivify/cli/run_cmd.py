@@ -84,6 +84,11 @@ def _build_agent(cfg) -> QoderCliAgent:
         max_concurrent_processes=qc.max_concurrent_processes,
         slot_wait_timeout_seconds=qc.slot_wait_timeout_seconds,
         auto_trust_workspace=qc.auto_trust_workspace,
+        use_remote=qc.use_remote,
+        remote_poll_interval=qc.remote_poll_interval,
+        remote_timeout=qc.remote_timeout,
+        max_concurrent_remote=qc.max_concurrent_remote,
+        plan_agent_for_decompose=qc.plan_agent_for_decompose,
     )
     return QoderCliAgent(bin_cfg)
 

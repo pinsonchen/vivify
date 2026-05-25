@@ -160,12 +160,14 @@ class Kernel:
         )
 
         # ── Goals 自动分解器初始化 ─────────────────────────────────
+        _plan_agent = getattr(self.deps.agent, 'cfg', None)
+        _plan_for_decompose = getattr(_plan_agent, 'plan_agent_for_decompose', True) if _plan_agent else True
         self._goal_decomposer = AgentGoalDecomposer(
             agent=self.deps.agent,
             repo_root=self.deps.repo_root,
             config=GoalDecomposerConfig(
                 max_features_per_decompose=self.config.goals.max_features_per_decompose,
-                plan_agent_for_decompose=self.config.agent.qodercli.plan_agent_for_decompose,
+                plan_agent_for_decompose=_plan_for_decompose,
             ),
         )
         self._last_decompose_time: float = 0.0

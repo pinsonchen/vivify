@@ -88,17 +88,47 @@ class RemoteSessionManager:
         logger.info("Remote session created: %s (%s)", session_id, session.url)
         return session
 
-    def check_status(self, session_id: str) -> str:
+    def check_status(self, session_id: str, workspace: Path | None = None) -> str:
         """Check whether a remote session has completed.
+
+        Uses a multi-signal approach:
+        1. Check if the workspace has new git commits (indicates work done).
+        2. Check ``qodercli --list-sessions`` to see if session disappeared.
 
         Returns one of ``'running'``, ``'completed'``, ``'failed'``,
         or ``'unknown'``.
         """
+        # Signal 1: workspace git activity (new commits in last 2 minutes)
+        if workspace:
+            try:
+                git_result = subprocess.run(
+                    ["git", "log", "--oneline", "--since=2 minutes ago", "-1"],
+                    cwd=str(workspace), capture_output=True, text=True, timeout=5,
+                )
+                if git_result.returncode == 0 and git_result.stdout.strip():
+                    logger.info(
+                        "Remote session %s: detected new git commit in workspace",
+                        session_id,
+                    )
+                    return "completed"
+            except Exception:
+                pass
+
+        # Signal 2: session list — if session no longer appears, it's done
         try:
-            return self._check_via_teleport(session_id)
+            listing = self.list_sessions()
+            if listing and session_id not in listing:
+                logger.info(
+                    "Remote session %s no longer in session list — completed",
+                    session_id,
+                )
+                return "completed"
+            if listing and session_id in listing:
+                return "running"
         except Exception as exc:
-            logger.warning("Failed to check session %s: %s", session_id, exc)
-            return "unknown"
+            logger.debug("list_sessions check failed: %s", exc)
+
+        return "unknown"
 
     def get_result(self, session_id: str, workspace: Path) -> str:
         """Return a summary of completed work by inspecting recent git commits."""
@@ -134,11 +164,12 @@ class RemoteSessionManager:
         session: RemoteSession,
         poll_interval: int = 15,
         timeout: int = 900,
+        workspace: Path | None = None,
     ) -> RemoteSession:
         """Poll until *session* completes or the wall-clock *timeout* expires."""
         start = time.time()
         while time.time() - start < timeout:
-            status = self.check_status(session.session_id)
+            status = self.check_status(session.session_id, workspace=workspace)
             session.status = status
             if status in ("completed", "failed"):
                 return session
@@ -156,29 +187,6 @@ class RemoteSessionManager:
         return session
 
     # ── private helpers ───────────────────────────────────────────────────────
-
-    def _check_via_teleport(self, session_id: str) -> str:
-        """Attach briefly to the session to probe its current status."""
-        cmd = [
-            self.binary, "--teleport", session_id,
-            "-p", "status",
-            "--max-turns", "1",
-        ]
-        try:
-            proc = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=30,
-                env=os.environ.copy(),
-            )
-            output = proc.stdout.lower()
-            if any(kw in output for kw in ("completed", "done", "finished")):
-                return "completed"
-            if any(kw in output for kw in ("error", "failed")):
-                return "failed"
-            return "running"
-        except subprocess.TimeoutExpired:
-            return "running"
-        except Exception:
-            return "unknown"
 
     @staticmethod
     def _parse_field(text: str, pattern: str) -> str:
