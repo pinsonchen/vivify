@@ -80,7 +80,8 @@ End your response with a fenced ```json``` block matching this schema:
       "type": "feature|bug|optimization",
       "priority": "P0|P1|P2|P3",
       "parent_goal": "{{ goal.name }}",
-      "verification_method": "Concrete, executable verification steps with expected outcomes"
+      "verification_method": "Concrete, executable verification steps with expected outcomes",
+      "idea_id": 0
     }
   ],
   "skipped_goals": [
@@ -90,6 +91,11 @@ End your response with a fenced ```json``` block matching this schema:
 ```
 
 ### verification_method requirements
+
+Each feature MAY optionally include:
+- `"idea_id"`: integer identifier linking this feature to a specific
+  sub-idea of the goal (for traceability between idea → feature → PR).
+  Omit the field or set to `null` when no upstream idea is referenced.
 
 Each feature MUST include a "verification_method" field describing:
 - Concrete, executable verification steps (commands, URLs, test files)

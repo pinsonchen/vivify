@@ -104,6 +104,11 @@ def parse_verification_result(output: str) -> dict:
         "verified": False,
         "summary": "verification result could not be parsed",
         "issues": ["unable to parse verification output"],
+        "metrics_before": {},
+        "metrics_after": {},
+        "improvement_summary": "",
+        "regression_detected": False,
+        "verdict": "failed",
         "parse_failed": True,
     }
     if not output:
@@ -111,11 +116,7 @@ def parse_verification_result(output: str) -> dict:
 
     for parsed in reversed(list(_iter_fenced_json(output, must_contain_key="verified"))):
         if "verified" in parsed:
-            return {
-                "verified": bool(parsed.get("verified", False)),
-                "summary": parsed.get("summary", ""),
-                "issues": list(parsed.get("issues", []) or []),
-            }
+            return _normalize_verification_payload(parsed)
 
     bare = re.search(r'\{[^{}]*"verified"[^{}]*\}', output, re.DOTALL)
     if bare:
@@ -123,12 +124,28 @@ def parse_verification_result(output: str) -> dict:
             parsed = json.loads(bare.group())
         except (TypeError, ValueError):
             return default
-        return {
-            "verified": bool(parsed.get("verified", False)),
-            "summary": parsed.get("summary", ""),
-            "issues": list(parsed.get("issues", []) or []),
-        }
+        return _normalize_verification_payload(parsed)
     return default
+
+
+def _normalize_verification_payload(parsed: dict) -> dict:
+    """Coerce the verifier JSON into the shape callers expect."""
+    metrics_before = parsed.get("metrics_before") or {}
+    metrics_after = parsed.get("metrics_after") or {}
+    if not isinstance(metrics_before, dict):
+        metrics_before = {}
+    if not isinstance(metrics_after, dict):
+        metrics_after = {}
+    return {
+        "verified": bool(parsed.get("verified", False)),
+        "summary": parsed.get("summary", ""),
+        "issues": list(parsed.get("issues", []) or []),
+        "metrics_before": metrics_before,
+        "metrics_after": metrics_after,
+        "improvement_summary": str(parsed.get("improvement_summary", "") or ""),
+        "regression_detected": bool(parsed.get("regression_detected", False)),
+        "verdict": str(parsed.get("verdict", "") or ""),
+    }
 
 
 def parse_next_steps(output: str) -> list[dict]:

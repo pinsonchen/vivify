@@ -53,7 +53,8 @@ FeatureType = Literal["feature", "bug", "optimization"]
 FeaturePriority = Literal["P0", "P1", "P2", "P3"]
 FeatureStatus = Literal[
     "pending", "evaluating", "approved", "rejected",
-    "developing", "deployed", "verified", "deployed_with_issues",
+    "developing", "deployed", "verifying", "verified",
+    "deployed_with_issues",
 ]
 
 
@@ -66,6 +67,7 @@ class FeatureSpec:
     parent_id: Optional[int] = None
     priority: Optional[FeaturePriority] = None
     verification_method: Optional[str] = None
+    idea_id: Optional[int] = None
 
 
 @dataclass

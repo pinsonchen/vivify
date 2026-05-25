@@ -697,6 +697,7 @@ class Kernel:
                 parent_goal=spec.parent_goal,
                 priority=spec.priority,
                 verification_method=spec.verification_method,
+                idea_id=getattr(spec, "idea_id", None),
             )
             return self.deps.storage.create_feature(fr)
         except Exception as e:  # pragma: no cover

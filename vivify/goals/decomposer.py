@@ -67,6 +67,15 @@ def _spec_from_dict(d: dict, *, parent_goal: str) -> Optional[FeatureSpec]:
     if priority and priority not in _VALID_PRIORITIES:
         priority = None
     verification_method = (d.get("verification_method") or "").strip() or None
+    # Optional traceability: link this feature back to a specific sub-idea
+    # of the goal so we can later show idea → feature → PR provenance.
+    idea_id_raw = d.get("idea_id")
+    idea_id: Optional[int] = None
+    if idea_id_raw is not None:
+        try:
+            idea_id = int(idea_id_raw)
+        except (TypeError, ValueError):
+            idea_id = None
     return FeatureSpec(
         title=title[:200],
         description=desc[:4000],
@@ -74,6 +83,7 @@ def _spec_from_dict(d: dict, *, parent_goal: str) -> Optional[FeatureSpec]:
         parent_goal=d.get("parent_goal") or parent_goal,
         priority=priority,
         verification_method=verification_method,
+        idea_id=idea_id,
     )
 
 

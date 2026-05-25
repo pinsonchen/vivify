@@ -20,6 +20,8 @@ through PR mode.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -58,6 +60,11 @@ class FeaturePipelineConfig:
     quality_run_pytest: bool = False
     repo_url: Optional[str] = None
     max_followups: int = 3
+    # ── lifecycle timeouts (Task #61: stuck-feature auto-recovery) ─────────
+    evaluating_timeout_minutes: int = 10
+    developing_timeout_minutes: int = 90
+    verifying_timeout_minutes: int = 60
+    max_retries: int = 3
 
 
 @dataclass
@@ -335,7 +342,32 @@ class FeaturePipeline:
         parsed = parsers.parse_verification_result(result.output or "")
         verified = bool(parsed.get("verified")) and not parsed.get("parse_failed")
         new_status = "verified" if verified else "deployed_with_issues"
-        self._update(feature, status=new_status, summary=parsed.get("summary", feature.summary))
+
+        # ── result-oriented verification: persist business-impact metrics ──
+        verification_data = {
+            "verified": verified,
+            "metrics_before": parsed.get("metrics_before", {}) or {},
+            "metrics_after": parsed.get("metrics_after", {}) or {},
+            "improvement_summary": parsed.get("improvement_summary", "") or "",
+            "regression_detected": bool(parsed.get("regression_detected", False)),
+            "verdict": parsed.get("verdict")
+                or ("verified" if verified else "failed"),
+            "issues": parsed.get("issues", []) or [],
+        }
+        try:
+            verification_result_json = json.dumps(
+                verification_data, ensure_ascii=False
+            )[:4000]
+        except (TypeError, ValueError):
+            verification_result_json = None
+
+        update_fields: dict = {
+            "status": new_status,
+            "summary": parsed.get("summary", feature.summary),
+        }
+        if verification_result_json:
+            update_fields["verification_result"] = verification_result_json
+        self._update(feature, **update_fields)
 
         # Persist a knowledge entry — what worked / what didn't.
         try:
@@ -351,13 +383,42 @@ class FeaturePipeline:
         except Exception as e:  # pragma: no cover
             logger.debug("add_knowledge failed: %s", e)
 
+        # ── auto-derive a fix request when verification fails ─────────────
+        if not verified:
+            issues = parsed.get("issues") or []
+            failure_reason = (
+                "; ".join(str(i) for i in issues)
+                if issues
+                else (parsed.get("summary") or "verification failed")
+            )
+            try:
+                self._create_derived_feature(
+                    parent=feature,
+                    title=f"Fix verification failure: {failure_reason[:60]}",
+                    description=(
+                        f"Verification of #{feature.id} failed: "
+                        f"{failure_reason}. Auto-generated fix request."
+                    ),
+                    type="bug",
+                )
+            except Exception as derive_err:  # pragma: no cover
+                logger.warning(
+                    "failed to create derived feature for #%s: %s",
+                    feature.id, derive_err,
+                )
+
         report.durations["verify"] = time.time() - start
         report.status = new_status
         self._log_action(
             round_num=round_num, action_type="feature_verify",
             status="success" if verified else "failed",
             feature=feature, summary=parsed.get("summary", "")[:2000],
-            details={"issues": parsed.get("issues", [])},
+            details={
+                "issues": parsed.get("issues", []),
+                "verdict": verification_data["verdict"],
+                "regression_detected": verification_data["regression_detected"],
+                "improvement_summary": verification_data["improvement_summary"],
+            },
             duration=report.durations["verify"],
         )
 
@@ -576,6 +637,219 @@ class FeaturePipeline:
                      development_result="Remote session failed or timed out")
         report.status = "deployed_with_issues"
         report.error = "remote_session_failed"
+
+    # ── derived requirements & batch development ──────────────────────────
+
+    def _create_derived_feature(
+        self,
+        parent: FeatureRequest,
+        title: str,
+        description: str,
+        type: str = "bug",
+    ) -> Optional[int]:
+        """Spawn a child FeatureRequest from a verification/deploy failure.
+
+        The derived feature inherits ``parent_goal``/``priority`` from the
+        parent, links back via ``parent_id``, and is created in
+        ``approved`` status so it skips re-evaluation and immediately enters
+        the develop stage on the next round.
+        """
+        try:
+            depth = self._get_chain_depth(parent.id)
+        except Exception:
+            depth = 0
+        if depth >= 2:
+            logger.info(
+                "Derived chain depth %d >= 2; skipping derivation from #%s",
+                depth, parent.id,
+            )
+            return None
+
+        derived = FeatureRequest(
+            title=f"[derived #{parent.id}] {title}"[:200],
+            description=description[:4000],
+            type=type if type in ("feature", "bug", "optimization") else "bug",
+            priority=getattr(parent, "priority", None) or "P1",
+            parent_id=parent.id,
+            parent_goal=getattr(parent, "parent_goal", None),
+            status="approved",  # skip evaluation, go straight to develop
+            verification_method=(
+                f"Verify that the issue from feature #{parent.id} is "
+                f"resolved: {title}"
+            ),
+        )
+        try:
+            fid = self.storage.create_feature(derived)
+        except Exception as e:  # pragma: no cover
+            logger.warning("create_feature(derived) failed: %s", e)
+            return None
+        logger.info(
+            "Created derived feature #%s from #%s: %s",
+            fid, parent.id, title,
+        )
+        return fid
+
+    def _maybe_batch_develop(
+        self, features: list[FeatureRequest]
+    ) -> list[FeatureRequest]:
+        """Group 3+ low-priority (P2/P3) features into a single batch.
+
+        Returns the selected batch (up to 5 features) tagged with a shared
+        ``batch_commit_hash``.  Returns ``[]`` when the pool is too small.
+        """
+        low_priority = [
+            f for f in features
+            if getattr(f, "priority", "") in ("P2", "P3")
+        ]
+        if len(low_priority) < 3:
+            return []
+
+        batch = low_priority[:5]
+        batch_titles = "|".join(f.title or "" for f in batch)
+        batch_hash = hashlib.md5(
+            batch_titles.encode("utf-8")
+        ).hexdigest()[:12]
+
+        for f in batch:
+            f.batch_commit_hash = batch_hash
+            try:
+                self.storage.update_feature(
+                    f.id, batch_commit_hash=batch_hash,
+                )
+            except Exception as e:  # pragma: no cover
+                logger.debug(
+                    "update_feature(batch tag) failed for #%s: %s",
+                    f.id, e,
+                )
+        logger.info(
+            "Batch %s: grouping %d low-priority features for combined development",
+            batch_hash, len(batch),
+        )
+        return batch
+
+    def _build_batch_prompt(self, features: list[FeatureRequest]) -> str:
+        """Render a single develop prompt that bundles multiple features."""
+        lines: list[str] = [
+            "Implement the following features in a single commit:\n",
+        ]
+        for i, f in enumerate(features, 1):
+            lines.append(f"## Feature {i}: {f.title}")
+            lines.append(f"Description: {f.description}")
+            if f.verification_method:
+                lines.append(f"Verification: {f.verification_method}")
+            lines.append("")
+        lines.append(
+            "Implement all features together. Create a single "
+            "well-organized commit covering every item above."
+        )
+        return "\n".join(lines)
+
+    # ── derived requirements & batch development ──────────────────────────
+
+    def _create_derived_feature(
+        self,
+        parent: FeatureRequest,
+        title: str,
+        description: str,
+        type: str = "bug",
+    ) -> Optional[int]:
+        """Spawn a child FeatureRequest from a verification/deploy failure.
+
+        The derived feature inherits ``parent_goal``/``priority`` from the
+        parent, links back via ``parent_id``, and is created in
+        ``approved`` status so it skips re-evaluation and immediately enters
+        the develop stage on the next round.
+        """
+        try:
+            depth = self._get_chain_depth(parent.id)
+        except Exception:
+            depth = 0
+        if depth >= 2:
+            logger.info(
+                "Derived chain depth %d >= 2; skipping derivation from #%s",
+                depth, parent.id,
+            )
+            return None
+
+        derived_type = type if type in ("feature", "bug", "optimization") else "bug"
+        derived = FeatureRequest(
+            title=f"[derived #{parent.id}] {title}"[:200],
+            description=description[:4000],
+            type=derived_type,
+            priority=getattr(parent, "priority", None) or "P1",
+            parent_id=parent.id,
+            parent_goal=getattr(parent, "parent_goal", None),
+            status="approved",  # skip evaluation, go straight to develop
+            verification_method=(
+                f"Verify that the issue from feature #{parent.id} is "
+                f"resolved: {title}"
+            ),
+        )
+        try:
+            fid = self.storage.create_feature(derived)
+        except Exception as e:  # pragma: no cover
+            logger.warning("create_feature(derived) failed: %s", e)
+            return None
+        logger.info(
+            "Created derived feature #%s from #%s: %s",
+            fid, parent.id, title,
+        )
+        return fid
+
+    def _maybe_batch_develop(
+        self, features: list[FeatureRequest]
+    ) -> list[FeatureRequest]:
+        """Group 3+ low-priority (P2/P3) features into a single batch.
+
+        Returns the selected batch (up to 5 features) tagged with a shared
+        ``batch_commit_hash``.  Returns ``[]`` when the pool is too small.
+        """
+        low_priority = [
+            f for f in features
+            if getattr(f, "priority", "") in ("P2", "P3")
+        ]
+        if len(low_priority) < 3:
+            return []
+
+        batch = low_priority[:5]
+        batch_titles = "|".join(f.title or "" for f in batch)
+        batch_hash = hashlib.md5(
+            batch_titles.encode("utf-8")
+        ).hexdigest()[:12]
+
+        for f in batch:
+            f.batch_commit_hash = batch_hash
+            try:
+                self.storage.update_feature(
+                    f.id, batch_commit_hash=batch_hash,
+                )
+            except Exception as e:  # pragma: no cover
+                logger.debug(
+                    "update_feature(batch tag) failed for #%s: %s",
+                    f.id, e,
+                )
+        logger.info(
+            "Batch %s: grouping %d low-priority features for combined development",
+            batch_hash, len(batch),
+        )
+        return batch
+
+    def _build_batch_prompt(self, features: list[FeatureRequest]) -> str:
+        """Render a single develop prompt that bundles multiple features."""
+        lines: list[str] = [
+            "Implement the following features in a single commit:\n",
+        ]
+        for i, f in enumerate(features, 1):
+            lines.append(f"## Feature {i}: {f.title}")
+            lines.append(f"Description: {f.description}")
+            if f.verification_method:
+                lines.append(f"Verification: {f.verification_method}")
+            lines.append("")
+        lines.append(
+            "Implement all features together. Create a single "
+            "well-organized commit covering every item above."
+        )
+        return "\n".join(lines)
 
     # ── helpers ────────────────────────────────────────────────────────────
     def _get_chain_depth(self, feature_id: int) -> int:
