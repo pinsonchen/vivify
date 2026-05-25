@@ -9,8 +9,10 @@
 - [vivify/cli/main.py](file://vivify/cli/main.py)
 - [vivify/cli/init_cmd.py](file://vivify/cli/init_cmd.py)
 - [vivify/cli/doctor_cmd.py](file://vivify/cli/doctor_cmd.py)
+- [vivify/cli/run_cmd.py](file://vivify/cli/run_cmd.py)
 - [vivify/config/schema.py](file://vivify/config/schema.py)
 - [vivify/config/loader.py](file://vivify/config/loader.py)
+- [vivify/config/defaults.py](file://vivify/config/defaults.py)
 - [vivify/dashboard/app.py](file://vivify/dashboard/app.py)
 - [vivify/reporter/github_issue_reporter.py](file://vivify/reporter/github_issue_reporter.py)
 - [vivify/interfaces/reporter.py](file://vivify/interfaces/reporter.py)
@@ -21,9 +23,9 @@
 - [vivify/pr_mode/worktree.py](file://vivify/pr_mode/worktree.py)
 - [vivify/pr_mode/quality_check.py](file://vivify/pr_mode/quality_check.py)
 - [vivify/kernel/feature_pipeline.py](file://vivify/kernel/feature_pipeline.py)
-- [vivify/config/defaults.py](file://vivify/config/defaults.py)
-- [vivify/deployers/command.py](file://vivify/deployers/command.py)
 - [vivify/daemon/manager.py](file://vivify/daemon/manager.py)
+- [vivify/deployers/command.py](file://vivify/deployers/command.py)
+- [tests/unit/test_pr_mode.py](file://tests/unit/test_pr_mode.py)
 - [tests/unit/test_qodercli_agent.py](file://tests/unit/test_qodercli_agent.py)
 </cite>
 
@@ -34,6 +36,9 @@
 - 新增实例级令牌配置的最佳实践和迁移指南
 - 更新认证流程图，反映新的层次化配置架构
 - 新增故障排除指南中关于实例配置的问题解决
+- **更新** PR创建模块增强：新增环境变量继承功能，确保GitHub认证令牌正确传递给子进程
+- **更新** 守护进程管理器增强：改进实例级令牌注入机制，支持自定义token_env名称映射
+- **更新** 命令部署器增强：统一环境变量继承策略，提升系统可靠性
 
 ## 目录
 1. [简介](#简介)
@@ -41,11 +46,12 @@
 3. [核心组件](#核心组件)
 4. [架构概览](#架构概览)
 5. [GitHub认证系统增强](#github认证系统增强)
-6. [详细组件分析](#详细组件分析)
-7. [依赖关系分析](#依赖关系分析)
-8. [性能考虑](#性能考虑)
-9. [故障排除指南](#故障排除指南)
-10. [结论](#结论)
+6. [AutoMerge 功能增强](#automerge-功能增强)
+7. [详细组件分析](#详细组件分析)
+8. [依赖关系分析](#依赖关系分析)
+9. [性能考虑](#性能考虑)
+10. [故障排除指南](#故障排除指南)
+11. [结论](#结论)
 
 ## 简介
 
@@ -61,6 +67,8 @@ GitHub认证系统增强是一个基于Python的智能自动化系统，专为Gi
 - **问题镜像**：高严重性事件自动镜像到GitHub Issues
 - **增强认证系统**：支持多种认证方式和层次化配置管理
 - **实例级别令牌配置**：从全局配置转向实例级别的细粒度控制
+- **增强的AutoMerge功能**：支持轮询机制和改进的错误处理
+- **可靠环境变量继承**：确保GitHub认证令牌正确传递给子进程
 
 ### 技术栈
 
@@ -270,7 +278,7 @@ GitHubConfig <|-- InstanceConfig
 ```
 
 **图表来源**
-- [vivify/config/schema.py:67-73](file://vivify/config/schema.py#L67-L73)
+- [vivify/config/schema.py:68-73](file://vivify/config/schema.py#L68-L73)
 - [vivify/cli/init_cmd.py:201-211](file://vivify/cli/init_cmd.py#L201-L211)
 
 #### 实例配置参数
@@ -286,7 +294,7 @@ GitHubConfig <|-- InstanceConfig
 **更新** 新增了`github.token`参数，支持实例级别的直接令牌配置，优先级最高
 
 **章节来源**
-- [vivify/config/schema.py:67-73](file://vivify/config/schema.py#L67-L73)
+- [vivify/config/schema.py:68-73](file://vivify/config/schema.py#L68-L73)
 - [.vivify.example.yml:35-40](file://.vivify.example.yml#L35-L40)
 
 ### 认证优先级机制
@@ -334,9 +342,55 @@ Daemon-->>App : 返回认证状态
    - 适用于多个项目的共享配置
    - 作为最后的回退选项
 
+**更新** 增强了环境变量继承机制，确保令牌正确传递给子进程
+
 **章节来源**
 - [vivify/daemon/manager.py:72-93](file://vivify/daemon/manager.py#L72-L93)
 - [vivify/dashboard/app.py:175-212](file://vivify/dashboard/app.py#L175-L212)
+
+### 环境变量继承增强
+
+系统现在实现了统一的环境变量继承机制，确保GitHub认证令牌在所有子进程中正确传递：
+
+```mermaid
+flowchart TD
+EnvInherit["环境变量继承"] --> CopyCurrent["复制当前进程环境"]
+CopyCurrent --> LoadGlobal["加载全局配置 (~/.vivify/env)"]
+LoadGlobal --> InjectInstance["注入实例级令牌"]
+InjectInstance --> MapTokenEnv["映射自定义token_env名称"]
+MapTokenEnv --> PassToSubprocess["传递给子进程"]
+PassToSubprocess --> GitCommands["git/gh命令执行"]
+GitCommands --> AuthSuccess["认证成功"]
+```
+
+**图表来源**
+- [vivify/pr_mode/pr_creator.py:43-54](file://vivify/pr_mode/pr_creator.py#L43-L54)
+- [vivify/daemon/manager.py:62-93](file://vivify/daemon/manager.py#L62-L93)
+- [vivify/deployers/command.py:66-77](file://vivify/deployers/command.py#L66-L77)
+
+#### 环境变量继承策略
+
+1. **守护进程管理器** (`vivify/daemon/manager.py`)
+   - 复制父进程环境变量
+   - 加载全局配置文件
+   - 注入实例级GitHub令牌
+   - 支持自定义token_env名称映射
+
+2. **PR创建器** (`vivify/pr_mode/pr_creator.py`)
+   - 显式继承当前进程环境
+   - 确保子进程获得完整的环境变量
+   - 支持各种命令行工具的认证需求
+
+3. **命令部署器** (`vivify/deployers/command.py`)
+   - 统一的环境变量构建策略
+   - 继承父进程环境并加载全局配置
+
+**更新** 新增了显式的环境变量继承机制，确保GitHub认证令牌在所有子进程中正确传递
+
+**章节来源**
+- [vivify/pr_mode/pr_creator.py:43-54](file://vivify/pr_mode/pr_creator.py#L43-L54)
+- [vivify/daemon/manager.py:62-93](file://vivify/daemon/manager.py#L62-L93)
+- [vivify/deployers/command.py:66-77](file://vivify/deployers/command.py#L66-L77)
 
 ### 环境文件管理
 
@@ -373,11 +427,153 @@ ApplyOverrides --> Ready["认证就绪"]
 3. **全局配置验证**：检查`~/.vivify/env`文件中的认证信息
 4. **实时状态检查**：在运行时动态验证认证状态
 
-**更新** 新增了实例配置验证，确保层次化配置的正确性
+**更新** 新增了环境变量继承验证，确保令牌在子进程中的正确传递
 
 **章节来源**
 - [vivify/cli/doctor_cmd.py:48-71](file://vivify/cli/doctor_cmd.py#L48-L71)
 - [vivify/dashboard/app.py:175-212](file://vivify/dashboard/app.py#L175-L212)
+
+## AutoMerge 功能增强
+
+### 轮询机制改进
+
+AutoMerge功能现在支持更精细的轮询控制，通过新增的配置参数实现：
+
+```mermaid
+flowchart TD
+Start([尝试合并PR]) --> CheckEnabled{"自动合并启用?"}
+CheckEnabled --> |否| SkipDisabled["跳过：配置禁用"]
+CheckEnabled --> |是| CheckDraft{"PR是草稿?"}
+CheckDraft --> |是| SkipDraft["跳过：PR是草稿"]
+CheckDraft --> |否| CheckGuard{"防护决策允许?"}
+CheckGuard --> |否| SkipGuard["跳过：防护拒绝"]
+CheckGuard --> |是| CheckIdentifier{"有PR标识符?"}
+CheckIdentifier --> |否| SkipMissing["跳过：缺少PR标识符"]
+CheckIdentifier --> |是| RunGh["执行gh pr merge --auto"]
+RunGh --> GhSuccess{"gh命令成功?"}
+GhSuccess --> |否| LogError["记录警告并返回失败"]
+GhSuccess --> |是| LogInfo["记录成功日志"]
+LogInfo --> CheckPoll{"需要轮询?"}
+CheckPoll --> |否| ReturnPending["返回待处理状态"]
+CheckPoll --> |是| PollLoop["轮询合并状态"]
+PollLoop --> CheckTimeout{"超过轮询超时?"}
+CheckTimeout --> |是| ReturnTimeout["返回超时"]
+CheckTimeout --> |否| CheckState{"检查PR状态"}
+CheckState --> |MERGED| ReturnMerged["返回已合并"]
+CheckState --> |CLOSED| ReturnClosed["返回未合并"]
+CheckState --> |PENDING| SleepInterval["休眠指定间隔"]
+SleepInterval --> PollLoop
+SkipDisabled --> End([结束])
+SkipDraft --> End
+SkipGuard --> End
+SkipMissing --> End
+LogError --> End
+ReturnPending --> End
+ReturnMerged --> End
+ReturnClosed --> End
+ReturnTimeout --> End
+```
+
+**图表来源**
+- [vivify/pr_mode/auto_merge.py:63-117](file://vivify/pr_mode/auto_merge.py#L63-L117)
+
+#### 新增配置参数
+
+| 参数名称 | 类型 | 默认值 | 描述 |
+|---------|------|--------|------|
+| poll_timeout_seconds | int | 0 | 轮询超时时间（秒），0表示不轮询 |
+| poll_interval_seconds | int | 30 | 轮询间隔时间（秒） |
+| gh_timeout_seconds | int | 60 | GitHub命令超时时间（秒） |
+
+**更新** 新增了轮询机制的两个关键参数，提供更精确的控制
+
+**章节来源**
+- [vivify/pr_mode/auto_merge.py:30-37](file://vivify/pr_mode/auto_merge.py#L30-L37)
+- [vivify/config/schema.py:24-25](file://vivify/config/schema.py#L24-L25)
+- [vivify/cli/run_cmd.py:124-128](file://vivify/cli/run_cmd.py#L124-L128)
+
+### 错误处理逻辑改进
+
+AutoMerge现在提供了更完善的错误处理机制：
+
+```mermaid
+classDiagram
+class AutoMergeConfig {
++enabled : bool
++method : str
++delete_branch : bool
++poll_timeout_seconds : int
++poll_interval_seconds : int
++gh_timeout_seconds : int
+}
+class MergeOutcome {
++requested : bool
++merged : bool
++skipped_reason : Optional[str]
++detail : str
+}
+class AutoMerge {
+-logger : Logger
+-config : AutoMergeConfig
++try_merge(pr, decision, cwd) MergeOutcome
++_poll_until_merged(target, cwd) MergeOutcome
++_pr_state(target, cwd) str
++checks_passing(pr, cwd) bool
+}
+AutoMerge --> AutoMergeConfig : uses
+AutoMerge --> MergeOutcome : returns
+```
+
+**图表来源**
+- [vivify/pr_mode/auto_merge.py:29-45](file://vivify/pr_mode/auto_merge.py#L29-L45)
+- [vivify/pr_mode/auto_merge.py:56-138](file://vivify/pr_mode/auto_merge.py#L56-L138)
+
+#### 错误处理状态
+
+| 状态类型 | 触发条件 | 返回值 | 说明 |
+|---------|----------|--------|------|
+| 请求成功 | gh命令执行成功 | requested=True, merged=False | PR已请求自动合并 |
+| 请求失败 | gh命令执行失败 | requested=True, merged=False | 记录错误详情 |
+| 跳过合并 | 配置禁用/草稿PR/防护拒绝/缺少标识符 | requested=False | 返回跳过原因 |
+| 轮询超时 | 超过poll_timeout_seconds | requested=True, merged=False | 返回超时状态 |
+| PR已合并 | 轮询检测到MERGED | requested=True, merged=True | PR已成功合并 |
+| PR已关闭 | 轮询检测到CLOSED | requested=True, merged=False | PR未合并 |
+
+**更新** 改进了错误处理逻辑，提供更详细的错误状态和原因
+
+**章节来源**
+- [vivify/pr_mode/auto_merge.py:63-138](file://vivify/pr_mode/auto_merge.py#L63-L138)
+- [tests/unit/test_pr_mode.py:145-185](file://tests/unit/test_pr_mode.py#L145-L185)
+
+### 配置集成
+
+AutoMerge功能现在与主配置系统深度集成：
+
+```mermaid
+flowchart TD
+ConfigLoad["加载配置文件"] --> CheckAutoMerge{"pr.auto_merge启用?"}
+CheckAutoMerge --> |是| CreateAM["创建AutoMerge实例"]
+CheckAutoMerge --> |否| SkipAM["跳过AutoMerge"]
+CreateAM --> SetTimeout["设置merge_poll_timeout_seconds"]
+SetTimeout --> SetInterval["设置poll_interval_seconds"]
+SetInterval --> InitAM["初始化AutoMerge"]
+InitAM --> Ready["AutoMerge就绪"]
+SkipAM --> Ready
+Ready --> FeaturePipeline["特征管道执行"]
+FeaturePipeline --> TryMerge["调用try_merge方法"]
+TryMerge --> Outcome["返回MergeOutcome"]
+Outcome --> Decision["根据结果决定后续操作"]
+```
+
+**图表来源**
+- [vivify/cli/run_cmd.py:124-128](file://vivify/cli/run_cmd.py#L124-L128)
+- [vivify/config/schema.py:20-26](file://vivify/config/schema.py#L20-L26)
+
+**更新** AutoMerge现在通过配置系统自动加载，支持动态配置调整
+
+**章节来源**
+- [vivify/cli/run_cmd.py:124-128](file://vivify/cli/run_cmd.py#L124-L128)
+- [vivify/config/schema.py:20-26](file://vivify/config/schema.py#L20-L26)
 
 ## 详细组件分析
 
@@ -498,6 +694,8 @@ PrCreator --> PrCreatorConfig : uses
 **图表来源**
 - [vivify/pr_mode/pr_creator.py:63-178](file://vivify/pr_mode/pr_creator.py#L63-L178)
 
+**更新** PR创建器现在使用显式的环境变量继承，确保GitHub认证令牌正确传递给git和gh命令
+
 **章节来源**
 - [vivify/pr_mode/pr_creator.py:1-178](file://vivify/pr_mode/pr_creator.py#L1-L178)
 
@@ -539,6 +737,8 @@ ReturnTimeout --> End
 
 **图表来源**
 - [vivify/pr_mode/auto_merge.py:63-117](file://vivify/pr_mode/auto_merge.py#L63-L117)
+
+**更新** AutoMerge现在依赖于改进的环境变量继承机制，确保gh命令能够正确访问GitHub认证令牌
 
 **章节来源**
 - [vivify/pr_mode/auto_merge.py:1-141](file://vivify/pr_mode/auto_merge.py#L1-L141)
@@ -697,6 +897,28 @@ P --> Q
 - **延迟加载**：按需加载模块和数据
 - **垃圾回收**：及时释放不再使用的对象
 
+### AutoMerge性能优化
+
+**更新** AutoMerge功能现在包含以下性能优化：
+
+- **智能轮询**：当`poll_timeout_seconds=0`时，系统采用"fire-and-forget"模式，完全依赖GitHub原生`--auto`标志
+- **最小化轮询开销**：轮询间隔至少5秒，避免过度轮询
+- **超时控制**：每个GitHub命令都有独立的超时控制
+- **错误快速失败**：gh命令失败时立即返回，不进行轮询
+
+### 环境变量继承性能优化
+
+**更新** 环境变量继承机制提供了以下性能优化：
+
+- **延迟导入**：配置文件解析使用延迟导入，避免启动时的硬依赖
+- **最小化复制**：只复制必要的环境变量，减少内存占用
+- **快速失败**：配置读取失败不影响系统启动
+- **统一策略**：所有子进程使用相同的环境变量继承策略
+
+**章节来源**
+- [vivify/pr_mode/auto_merge.py:101-116](file://vivify/pr_mode/auto_merge.py#L101-L116)
+- [vivify/daemon/manager.py:72-93](file://vivify/daemon/manager.py#L72-L93)
+
 ## 故障排除指南
 
 ### 常见问题及解决方案
@@ -711,7 +933,7 @@ P --> Q
 3. 验证网络连接
 4. 检查`~/.vivify/env`文件中的认证配置
 
-**更新** 增强了认证配置流程，支持多种认证方式的自动检测和切换，包括实例级别的令牌配置
+**更新** 增强了认证配置流程，支持多种认证方式的自动检测和切换，包括实例级别的令牌配置和改进的环境变量继承机制
 
 #### 层次化配置问题
 
@@ -724,6 +946,30 @@ P --> Q
 4. 使用`vivify doctor`检查配置状态
 
 **新增** 关于层次化配置的专门故障排除指南
+
+#### 环境变量继承问题
+
+**症状**：子进程无法访问GitHub认证令牌
+**原因**：环境变量未正确传递给子进程
+**解决方案**：
+1. 检查守护进程管理器的环境变量注入
+2. 验证PR创建器的显式环境变量继承
+3. 确认命令部署器的环境变量构建
+4. 使用调试模式查看实际传递的环境变量
+
+**新增** 关于环境变量继承机制的专门故障排除指南
+
+#### AutoMerge轮询问题
+
+**症状**：PR长时间处于待合并状态或轮询超时
+**原因**：轮询配置不当或GitHub检查未完成
+**解决方案**：
+1. 检查`merge_poll_timeout_seconds`配置
+2. 验证`poll_interval_seconds`设置
+3. 确认GitHub分支保护设置
+4. 查看AutoMerge日志输出
+
+**新增** 关于AutoMerge轮询机制的专门故障排除指南
 
 #### 权限问题
 
@@ -751,7 +997,23 @@ P --> Q
 - **仪表板认证检查**：实时显示认证状态，区分实例、环境和全局配置
 - **初始化向导**：引导用户完成认证配置，支持实例级别令牌设置
 
-**更新** 诊断工具现在支持层次化配置的完整验证
+**更新** 诊断工具现在支持层次化配置的完整验证和环境变量继承状态检查
+
+### AutoMerge诊断工具
+
+**新增** AutoMerge功能包含以下诊断工具：
+
+- **轮询状态检查**：验证轮询配置的有效性
+- **GitHub检查状态**：确认GitHub检查是否通过
+- **合并结果跟踪**：跟踪PR合并过程中的所有状态变化
+
+### 环境变量继承诊断工具
+
+**新增** 环境变量继承机制包含以下诊断工具：
+
+- **环境变量状态检查**：验证令牌在子进程中的传递状态
+- **继承链追踪**：显示环境变量的继承路径和来源
+- **配置冲突检测**：识别可能影响令牌传递的配置冲突
 
 **章节来源**
 - [vivify/cli/doctor_cmd.py:48-84](file://vivify/cli/doctor_cmd.py#L48-L84)
@@ -771,6 +1033,8 @@ GitHub认证系统增强提供了一个完整、安全、可扩展的自动化�
 6. **增强认证**：支持多种认证方式和层次化配置管理
 7. **实例级别控制**：提供细粒度的令牌管理能力
 8. **向后兼容**：保持与现有配置的兼容性
+9. **增强的AutoMerge功能**：提供精确的轮询控制和改进的错误处理
+10. **可靠环境变量继承**：确保GitHub认证令牌正确传递给子进程，提升系统可靠性
 
 ### 未来发展方向
 
@@ -780,5 +1044,7 @@ GitHub认证系统增强提供了一个完整、安全、可扩展的自动化�
 - **容器化部署**：支持Docker和Kubernetes部署
 - **认证令牌管理**：提供更完善的令牌生命周期管理
 - **配置模板系统**：支持认证配置的模板化管理
+- **AutoMerge智能调度**：根据项目规模和重要性自动调整轮询策略
+- **增强的环境变量管理**：提供更精细的环境变量继承和管理机制
 
-该系统为现代软件开发团队提供了强大的自动化工具，能够显著提高开发效率和代码质量。新的层次化认证配置系统为不同规模和复杂度的项目提供了灵活的配置选择，从简单的个人项目到复杂的多环境部署场景都能得到很好的支持。
+该系统为现代软件开发团队提供了强大的自动化工具，能够显著提高开发效率和代码质量。新的层次化认证配置系统为不同规模和复杂度的项目提供了灵活的配置选择，从简单的个人项目到复杂的多环境部署场景都能得到很好的支持。AutoMerge功能的增强进一步提升了系统的自动化能力和用户体验，为项目的持续集成和交付提供了更加可靠的保障。环境变量继承机制的改进确保了GitHub认证令牌在所有子进程中的正确传递，大大提升了系统的稳定性和可靠性。

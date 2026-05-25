@@ -11,6 +11,7 @@ Per plan §9 step 8 + §10:
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 import time
 from dataclasses import dataclass
@@ -24,6 +25,25 @@ logger = logging.getLogger(__name__)
 
 
 MergeMethod = str  # "squash" | "merge" | "rebase"
+
+_GIT_REPO_RE = re.compile(r"[/:]([^/:]+/[^/.]+?)(?:\.git)?$")
+
+
+def _repo_slug_from_cwd(cwd: Path | str | None) -> str | None:
+    """Derive ``owner/repo`` from the git remote of *cwd*.
+
+    Works in both main repos and git worktrees (they share remotes).
+    """
+    if cwd is None:
+        return None
+    try:
+        res = _run(["git", "remote", "get-url", "origin"], cwd=cwd, timeout=10)
+        if res.returncode != 0:
+            return None
+        m = _GIT_REPO_RE.search(res.stdout.strip())
+        return m.group(1) if m else None
+    except Exception:
+        return None
 
 
 @dataclass
@@ -85,6 +105,12 @@ class AutoMerge:
         if self.config.delete_branch:
             cmd.append("--delete-branch")
 
+        # Use --repo to operate via GitHub API only, avoiding local
+        # ``git checkout main`` that fails inside a worktree.
+        repo_slug = _repo_slug_from_cwd(cwd)
+        if repo_slug:
+            cmd.extend(["--repo", repo_slug])
+
         result = _run(cmd, cwd=cwd, timeout=self.config.gh_timeout_seconds)
         if result.returncode != 0:
             logger.warning(
@@ -116,8 +142,12 @@ class AutoMerge:
         return MergeOutcome(True, False, detail="poll timeout — auto-merge still pending")
 
     def _pr_state(self, target: str, *, cwd) -> str:
+        cmd = ["gh", "pr", "view", target, "--json", "state", "-q", ".state"]
+        repo_slug = _repo_slug_from_cwd(cwd)
+        if repo_slug:
+            cmd.extend(["--repo", repo_slug])
         res = _run(
-            ["gh", "pr", "view", target, "--json", "state", "-q", ".state"],
+            cmd,
             cwd=cwd, timeout=self.config.gh_timeout_seconds,
         )
         if res.returncode != 0:
@@ -129,8 +159,12 @@ class AutoMerge:
         target = str(pr.number) if pr.number is not None else pr.url
         if not target:
             return False
+        cmd = ["gh", "pr", "checks", target]
+        repo_slug = _repo_slug_from_cwd(cwd)
+        if repo_slug:
+            cmd.extend(["--repo", repo_slug])
         res = _run(
-            ["gh", "pr", "checks", target],
+            cmd,
             cwd=cwd, timeout=self.config.gh_timeout_seconds,
         )
         # ``gh pr checks`` exits 0 only when every required check passed.

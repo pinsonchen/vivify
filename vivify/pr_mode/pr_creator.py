@@ -208,7 +208,26 @@ class PrCreator:
         draft: Optional[bool] = None,
         base: Optional[str] = None,
     ) -> PullRequest:
-        """Convenience: push then open a PR in a single call."""
+        """Convenience: push then open a PR in a single call.
+
+        Raises :class:`RuntimeError` if the branch has no new commits
+        relative to the base branch (i.e. the agent made no changes).
+        """
+        # Guard: skip push + PR when the branch is identical to base.
+        base_ref = worktree.base_ref or (base or self.config.base_branch)
+        diff_check = _run(
+            ["git", "log", f"{base_ref}..HEAD", "--oneline"],
+            cwd=worktree.path, timeout=10,
+        )
+        if diff_check.returncode == 0 and not diff_check.stdout.strip():
+            logger.warning(
+                "No commits on branch %s vs %s, skipping PR creation",
+                worktree.branch, base_ref,
+            )
+            raise RuntimeError(
+                f"No commits on branch {worktree.branch} relative to {base_ref}"
+            )
+
         self.push_branch(worktree)
         return self.open_pr(
             worktree,
