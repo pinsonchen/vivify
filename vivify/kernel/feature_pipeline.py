@@ -178,6 +178,11 @@ class FeaturePipeline:
         )
         # Stash the approach for the develop stage to inject.
         object.__setattr__(feature, "_approach", parsed.get("implementation_approach", ""))
+        # Update verification_method if the evaluator refined it.
+        refined_vm = (parsed.get("refined_verification_method") or "").strip()
+        if refined_vm:
+            feature.verification_method = refined_vm
+            self._update(feature, verification_method=refined_vm)
         report.durations["evaluate"] = time.time() - start
         self._log_action(
             round_num=round_num, action_type="feature_evaluate",

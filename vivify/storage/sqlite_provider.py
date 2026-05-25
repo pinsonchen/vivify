@@ -128,13 +128,13 @@ class SqliteStorageProvider(StorageProvider):
                 INSERT INTO feature_requests (
                     title, description, type, parent_goal, parent_id, priority,
                     status, development_result, commit_hash, pr_url,
-                    feasibility, summary, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    feasibility, summary, verification_method, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     fr.title, fr.description, fr.type, fr.parent_goal, fr.parent_id,
                     fr.priority, fr.status, fr.development_result, fr.commit_hash,
-                    fr.pr_url, fr.feasibility, fr.summary,
+                    fr.pr_url, fr.feasibility, fr.summary, fr.verification_method,
                     _to_iso(fr.created_at) or _to_iso(datetime.now(timezone.utc)),
                     _to_iso(fr.updated_at) or _to_iso(datetime.now(timezone.utc)),
                 ),
@@ -172,7 +172,7 @@ class SqliteStorageProvider(StorageProvider):
         allowed = {
             "title", "description", "type", "parent_goal", "parent_id",
             "priority", "status", "development_result", "commit_hash",
-            "pr_url", "feasibility", "summary",
+            "pr_url", "feasibility", "summary", "verification_method",
         }
         sets: list[str] = []
         values: list[Any] = []
@@ -192,6 +192,11 @@ class SqliteStorageProvider(StorageProvider):
 
     @staticmethod
     def _row_to_feature(row: sqlite3.Row) -> FeatureRequest:
+        # verification_method may not exist in older databases before migration 0002
+        try:
+            verification_method = row["verification_method"]
+        except (IndexError, KeyError):
+            verification_method = None
         return FeatureRequest(
             id=int(row["id"]),
             title=row["title"],
@@ -200,6 +205,7 @@ class SqliteStorageProvider(StorageProvider):
             parent_goal=row["parent_goal"],
             parent_id=row["parent_id"],
             priority=row["priority"],
+            verification_method=verification_method,
             status=row["status"] or "pending",
             development_result=row["development_result"] or "",
             commit_hash=row["commit_hash"],

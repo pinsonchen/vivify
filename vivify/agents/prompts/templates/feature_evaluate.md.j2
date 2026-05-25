@@ -29,6 +29,20 @@ You are evaluating whether and how to implement the following feature request.
 {{ related_knowledge }}
 
 {% endif -%}
+{% if feature.verification_method -%}
+## Verification Method Review
+
+The proposed verification method is:
+{{ feature.verification_method }}
+
+Evaluate whether this verification method is:
+1. Concrete and executable (not vague)
+2. Automatable (can be run without human intervention)
+3. Sufficient to confirm the feature works end-to-end
+
+If the method is inadequate, provide an improved version in the output field "refined_verification_method".
+
+{% endif -%}
 ## ROI Assessment (Required)
 
 Estimate the return-on-investment for this feature:
@@ -65,7 +79,8 @@ End your response with a fenced ```json``` block matching this schema:
   "affected_files_count": 6,
   "technical_complexity": "low|medium|high",
   "risks": ["short risk #1", "short risk #2"],
-  "implementation_approach": "concrete step-by-step plan, paths and APIs to touch"
+  "implementation_approach": "concrete step-by-step plan, paths and APIs to touch",
+  "refined_verification_method": "improved verification steps if original is inadequate, or omit if adequate"
 }
 ```
 

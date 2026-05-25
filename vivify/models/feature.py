@@ -65,6 +65,7 @@ class FeatureSpec:
     parent_goal: Optional[str] = None
     parent_id: Optional[int] = None
     priority: Optional[FeaturePriority] = None
+    verification_method: Optional[str] = None
 
 
 @dataclass
@@ -75,6 +76,7 @@ class FeatureRequest:
     parent_goal: Optional[str] = None
     parent_id: Optional[int] = None
     priority: Optional[FeaturePriority] = None
+    verification_method: Optional[str] = None
     id: int = 0
     status: FeatureStatus = "pending"
     development_result: str = ""

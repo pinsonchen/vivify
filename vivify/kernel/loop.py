@@ -696,6 +696,7 @@ class Kernel:
                 type=spec.type,
                 parent_goal=spec.parent_goal,
                 priority=spec.priority,
+                verification_method=spec.verification_method,
             )
             return self.deps.storage.create_feature(fr)
         except Exception as e:  # pragma: no cover

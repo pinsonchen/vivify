@@ -19,6 +19,19 @@ files or open additional PRs.
 **Description (what should now work)**
 {{ feature.description }}
 
+{% if feature.verification_method -%}
+## Defined Verification Method
+
+Execute the following verification method defined for this feature:
+
+{{ feature.verification_method }}
+
+Follow each step exactly. Report:
+- Which steps passed ✓
+- Which steps failed ✗ (with actual output vs expected)
+- Overall verdict: verified / failed
+
+{% endif -%}
 {% if feature.development_result -%}
 **What the developer reported**
 {{ feature.development_result }}

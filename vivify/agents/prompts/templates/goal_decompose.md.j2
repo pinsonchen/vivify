@@ -79,7 +79,8 @@ End your response with a fenced ```json``` block matching this schema:
       "description": "≤500 char description, why + what + acceptance criteria",
       "type": "feature|bug|optimization",
       "priority": "P0|P1|P2|P3",
-      "parent_goal": "{{ goal.name }}"
+      "parent_goal": "{{ goal.name }}",
+      "verification_method": "Concrete, executable verification steps with expected outcomes"
     }
   ],
   "skipped_goals": [
@@ -87,6 +88,23 @@ End your response with a fenced ```json``` block matching this schema:
   ]
 }
 ```
+
+### verification_method requirements
+
+Each feature MUST include a "verification_method" field describing:
+- Concrete, executable verification steps (commands, URLs, test files)
+- Expected outcomes (status codes, output patterns, metrics thresholds)
+- The verification should be automatable — prefer CLI commands, curl, test suites over manual visual inspection
+
+Examples of good verification methods:
+- "Run `pytest tests/test_pwa.py` — all tests pass; run `lighthouse --only-categories=pwa` — score >= 90"
+- "curl -s https://mlive.example.com/manifest.json | jq .icons — should contain 3+ icon entries with sizes 192x192 and 512x512"
+- "Check git log for CHANGELOG.md update; grep 'v2.1' docs/VERSION.md returns match"
+
+Examples of BAD verification methods (too vague):
+- "Verify it works"
+- "Check the feature is implemented"
+- "Test manually"
 
 Rules:
 

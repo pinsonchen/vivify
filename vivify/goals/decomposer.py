@@ -66,12 +66,14 @@ def _spec_from_dict(d: dict, *, parent_goal: str) -> Optional[FeatureSpec]:
     priority = d.get("priority") or None
     if priority and priority not in _VALID_PRIORITIES:
         priority = None
+    verification_method = (d.get("verification_method") or "").strip() or None
     return FeatureSpec(
         title=title[:200],
         description=desc[:4000],
         type=ftype,
         parent_goal=d.get("parent_goal") or parent_goal,
         priority=priority,
+        verification_method=verification_method,
     )
 
 
