@@ -135,6 +135,25 @@ class FeaturePipeline:
         feature.priority = parsed.get("priority") or feature.priority
         feature.feasibility = parsed.get("feasibility") or ""
         feature.summary = parsed.get("summary") or ""
+
+        # ── ROI 门槛检查 ──────────────────────────────────────────────────
+        roi_score = parsed.get("roi_score", 100)  # 默认 100 保证向后兼容
+        if isinstance(roi_score, (int, float)) and roi_score < 30:
+            logger.info("Feature #%d rejected: ROI too low (%d/100)", feature.id, roi_score)
+            feature.feasibility = f"ROI too low ({roi_score}/100) for automated execution"
+            parsed["feasible"] = False
+
+        # ── 部署可行性检查 ────────────────────────────────────────────────
+        if parsed.get("needs_admin_review", False):
+            logger.info("Feature #%d rejected: needs admin review", feature.id)
+            feature.feasibility = parsed.get("feasibility") or "Requires manual admin review"
+            parsed["feasible"] = False
+
+        if parsed.get("blocked_by_parent", False):
+            logger.info("Feature #%d rejected: blocked by undeployed parent", feature.id)
+            feature.feasibility = parsed.get("feasibility") or "Blocked by undeployed parent feature"
+            parsed["feasible"] = False
+
         if not parsed.get("feasible", True):
             self._update(feature, status="rejected",
                          feasibility=feature.feasibility, summary=feature.summary)
@@ -144,7 +163,10 @@ class FeaturePipeline:
                 status="success",
                 feature=feature,
                 summary=feature.summary,
-                details={"feasible": False, "approach": parsed.get("implementation_approach", "")},
+                details={"feasible": False, "roi_score": roi_score,
+                         "needs_admin_review": parsed.get("needs_admin_review", False),
+                         "blocked_by_parent": parsed.get("blocked_by_parent", False),
+                         "approach": parsed.get("implementation_approach", "")},
                 duration=time.time() - start,
             )
             report.status = "rejected"
@@ -551,7 +573,31 @@ class FeaturePipeline:
         report.error = "remote_session_failed"
 
     # ── helpers ────────────────────────────────────────────────────────────
+    def _get_chain_depth(self, feature_id: int) -> int:
+        """Recursively measure followup chain depth (trace parent_id upward)."""
+        depth = 0
+        current_id = feature_id
+        seen: set[int] = set()  # guard against circular references
+        while current_id and current_id not in seen:
+            seen.add(current_id)
+            parent = self.storage.get_feature(current_id)
+            if parent and getattr(parent, 'parent_id', None):
+                depth += 1
+                current_id = parent.parent_id
+            else:
+                break
+        return depth
+
     def _create_followups(self, parent: FeatureRequest, output: str) -> int:
+        # Enforce followup chain depth limit (max 2 levels)
+        depth = self._get_chain_depth(parent.id)
+        if depth >= 2:
+            logger.info(
+                "Followup chain depth %d >= 2, skipping followup for feature #%d",
+                depth, parent.id,
+            )
+            return 0
+
         steps = parsers.parse_next_steps(output)[: self.config.max_followups]
         created = 0
         for step in steps:

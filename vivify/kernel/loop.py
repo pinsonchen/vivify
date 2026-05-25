@@ -543,6 +543,9 @@ class Kernel:
             logger.debug("log_action(deploy) failed: %s", e)
 
     # ── stage 3: feature pipeline ──────────────────────────────────────────
+
+    _PRIORITY_RANK = {"P0": 4, "P1": 3, "P2": 2, "P3": 1}
+
     def _handle_features(self, *, report: RoundReport) -> None:
         if self.config.dry_run:
             return
@@ -554,6 +557,17 @@ class Kernel:
                 logger.debug("list_features(%s) failed: %s", status, e)
         if not pending:
             return
+
+        # Sort by priority: P0 > P1 > P2 > P3 > None; parent before followup; then by id.
+        pending = sorted(
+            pending,
+            key=lambda f: (
+                -self._PRIORITY_RANK.get(getattr(f, 'priority', None) or '', 0),
+                getattr(f, 'parent_id', None) or 0,  # parent (0) before followup
+                f.id,
+            ),
+        )
+
         budget = self.config.max_features_per_round
         pipeline = FeaturePipeline(
             agent=self.deps.agent,

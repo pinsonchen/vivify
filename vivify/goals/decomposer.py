@@ -120,6 +120,23 @@ class AgentGoalDecomposer(GoalDecomposer):
         self.repo_root = Path(repo_root)
         self.config = config or GoalDecomposerConfig()
 
+    # ── KPI achievement helpers ───────────────────────────────────────────
+    def _count_met_kpis(self, goal: Goal, recent_snapshots: Sequence[KpiSnapshot]) -> int:
+        """计算已达标的 KPI 数量。"""
+        if not goal.kpis or not recent_snapshots:
+            return 0
+
+        latest = recent_snapshots[-1].metrics
+        if not latest:
+            return 0
+
+        met = 0
+        for kpi in goal.kpis:
+            current_value = latest.get(kpi.name)
+            if current_value is not None and kpi.is_met(current_value):
+                met += 1
+        return met
+
     # ── context helpers ────────────────────────────────────────────────────
     def _get_existing_features(self, db_path: Path) -> list[dict]:
         """获取已有 feature_requests 列表（排除 rejected/cancelled）。"""
@@ -188,16 +205,28 @@ class AgentGoalDecomposer(GoalDecomposer):
         open_features: Sequence[FeatureRequest],
         recent_snapshots: Sequence[KpiSnapshot],
     ) -> List[FeatureSpec]:
-        # Quick exit: every KPI already met → no work.
+        # ── KPI 达成度停止条件 ─────────────────────────────────────────────
+        max_features = self.config.max_features_per_decompose
+
         if goal.kpis and recent_snapshots:
-            latest = recent_snapshots[-1].metrics
-            if all(
-                k.is_met(latest.get(k.name)) for k in goal.kpis if latest.get(k.name) is not None
-            ):
-                logger.info("Goal '%s' already meets all KPIs; skipping", goal.name)
+            met_count = self._count_met_kpis(goal, recent_snapshots)
+            total = len(goal.kpis)
+
+            if met_count == total:
+                logger.info(
+                    "Goal '%s': all %d KPIs met, skipping decomposition",
+                    goal.name, total,
+                )
                 return []
 
-        # Collect additional context from state.db
+            if total > 1 and met_count >= total * 0.85:
+                logger.info(
+                    "Goal '%s': %d/%d KPIs met (>=85%%), limiting to 1 feature",
+                    goal.name, met_count, total,
+                )
+                max_features = 1
+
+        # ── Collect additional context from state.db ──────────────────────
         db_path = self.repo_root / ".vivify" / "state.db"
         existing_features = self._get_existing_features(db_path)
         kpi_snapshots_db = self._get_kpi_snapshots(db_path)
@@ -208,7 +237,7 @@ class AgentGoalDecomposer(GoalDecomposer):
             open_features=tuple(open_features),
             recent_snapshots=_format_recent_snapshots(recent_snapshots),
             kpi_status=_format_kpi_status(goal, recent_snapshots),
-            max_features=self.config.max_features_per_decompose,
+            max_features=max_features,
             existing_features=existing_features,
             kpi_snapshots=kpi_snapshots_db,
         )
@@ -229,7 +258,7 @@ class AgentGoalDecomposer(GoalDecomposer):
 
         specs: List[FeatureSpec] = []
         existing_titles = [fr.title for fr in open_features]
-        for raw in raw_specs[: self.config.max_features_per_decompose]:
+        for raw in raw_specs[:max_features]:
             if not isinstance(raw, dict):
                 continue
             spec = _spec_from_dict(raw, parent_goal=goal.name)
