@@ -118,6 +118,8 @@ def build_goal_decompose(
     recent_snapshots: str = "",
     kpi_status: str = "",
     max_features: int = 3,
+    existing_features: Sequence[dict] = (),
+    kpi_snapshots: Sequence[dict] = (),
 ) -> str:
     """Prompt for breaking a :class:`Goal` into :class:`FeatureSpec`s."""
     return _render(
@@ -128,6 +130,8 @@ def build_goal_decompose(
         recent_snapshots=recent_snapshots,
         kpi_status=kpi_status,
         max_features=int(max_features),
+        existing_features=existing_features,
+        kpi_snapshots=kpi_snapshots,
     )
 
 

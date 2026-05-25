@@ -9,6 +9,7 @@
 - [test_pr_mode.py](file://tests/unit/test_pr_mode.py)
 - [test_self_grow_guard.py](file://tests/unit/test_self_grow_guard.py)
 - [init_cmd.py](file://vivify/cli/init_cmd.py)
+- [scanner.py](file://vivify/intelligence/scanner.py)
 </cite>
 
 ## 更新摘要
@@ -17,6 +18,9 @@
 - 添加标签缺失重试机制，提高 PR 创建的容错能力
 - 增强特征管道的错误处理，支持 PR 创建失败的自动重试
 - 更新 PR 主体文件名从 `.auto-heal-pr-body.md` 到 `.vivify-pr-body.md`
+- **新增**：工作树环境下的仓库slug检测机制，通过 `Scanner` 类检测默认分支
+- **新增**：空分支检测功能，在 `_resolve_base_ref` 方法中处理不存在的分支引用
+- **新增**：增强PR创建和自动合并的可靠性，通过 `base_ref` 参数传递分支信息
 
 ## 目录
 1. [简介](#简介)
@@ -42,6 +46,9 @@
 - **新增**：环境变量继承功能，确保GitHub认证令牌可靠传递
 - **新增**：标签缺失重试机制，提高PR创建的容错能力
 - **新增**：特征管道增强PR创建失败的错误处理能力
+- **新增**：工作树环境下的仓库slug检测机制
+- **新增**：空分支检测功能，增强分支引用的可靠性
+- **新增**：PR创建和自动合并的分支信息传递机制
 
 ## 项目结构
 
@@ -56,11 +63,12 @@ C[CLI接口模块<br/>cli/]
 D[报告模块<br/>reporter/]
 E[测试模块<br/>tests/]
 F[内核模块<br/>kernel/]
+G[智能分析模块<br/>intelligence/]
 end
 subgraph "配置文件"
-G[pyproject.toml<br/>包配置]
-H[.vivify.example.yml<br/>示例配置]
-I[模板文件<br/>templates/]
+H[pyproject.toml<br/>包配置]
+I[.vivify.example.yml<br/>示例配置]
+J[模板文件<br/>templates/]
 end
 A --> F
 B --> A
@@ -69,6 +77,7 @@ D --> A
 E --> B
 E --> A
 F --> B
+G --> F
 ```
 
 **图表来源**
@@ -95,6 +104,10 @@ PR创建模块负责处理Pull Request的创建流程，包括标签管理、主
 
 特征管道模块协调整个功能开发流程，从评估、开发到验证的完整生命周期管理。
 
+### 智能分析模块 (intelligence)
+
+智能分析模块提供项目扫描、配置推断和环境检测功能，支持工作树环境的仓库slug检测。
+
 **章节来源**
 - [feature_pipeline.py:79-115](file://vivify/kernel/feature_pipeline.py#L79-L115)
 
@@ -107,29 +120,35 @@ A[PR创建器<br/>pr_creator.py]
 B[自增长守卫<br/>self_grow_guard.py]
 C[工作树管理<br/>worktree.py]
 D[特征管道<br/>feature_pipeline.py]
+E[智能分析<br/>scanner.py]
 end
 subgraph "配置系统"
-E[配置Schema<br/>schema.py]
-F[配置加载器<br/>loader.py]
-G[默认值定义<br/>defaults.py]
+F[配置Schema<br/>schema.py]
+G[配置加载器<br/>loader.py]
+H[默认值定义<br/>defaults.py]
 end
 subgraph "标签系统"
-H[默认标签<br/>("vivify",)]
-I[内核变更标签<br/>("vivify:kernel-change")]
-J[插件变更标签<br/>("vivify:plugin-change")]
-K[环境变量继承<br/>GH_TOKEN传递]
+I[默认标签<br/>("vivify",)]
+J[内核变更标签<br/>("vivify:kernel-change")]
+K[插件变更标签<br/>("vivify:plugin-change")]
+L[环境变量继承<br/>GH_TOKEN传递]
+M[仓库slug检测<br/>Scanner类]
+N[空分支检测<br/>_resolve_base_ref]
 end
-A --> H
-B --> I
+A --> I
 B --> J
+B --> K
 A --> D
 D --> A
 D --> B
 D --> C
-A --> E
 C --> E
-E --> F
+E --> M
+M --> N
+A --> F
+C --> F
 F --> G
+G --> H
 ```
 
 **图表来源**
@@ -162,13 +181,18 @@ PR创建器负责PR的创建和管理，包含以下关键功能：
 - **作用**：当远程仓库不存在指定标签时，自动重试移除标签参数的PR创建
 - **实现**：匹配"标签" + "不存在"的错误消息模式
 
+#### 分支信息传递增强
+- **新增功能**：`open_pr`和`push_and_open`方法支持`base`参数
+- **作用**：允许外部传入自定义基础分支信息
+- **实现**：通过`base_branch = base or self.config.base_branch`处理参数
+
 ```mermaid
 sequenceDiagram
 participant Client as "客户端"
 participant Creator as "PR创建器"
 participant Env as "环境变量"
 participant GitHub as "GitHub API"
-Client->>Creator : 创建PR请求
+Client->>Creator : 创建PR请求(含base参数)
 Creator->>Env : 继承当前进程环境
 Env-->>Creator : GH_TOKEN等令牌
 Creator->>Creator : 检查标签是否存在
@@ -250,6 +274,16 @@ UpdatePrefix --> CheckLabels
 - **变更后**：`"vivify/"`
 - **作用**：统一分支命名规范
 
+#### 仓库slug检测机制
+- **新增功能**：通过`Scanner`类检测默认分支
+- **作用**：在工作树创建前获取正确的基础分支信息
+- **实现**：使用`git branch --show-current`命令获取当前分支
+
+#### 空分支检测功能
+- **新增功能**：`_resolve_base_ref`方法处理不存在的分支引用
+- **作用**：当远程跟踪引用不存在时，回退到本地分支或HEAD
+- **实现**：优先检查`origin/{base_branch}`，然后检查本地分支，最后使用`HEAD`
+
 ```mermaid
 classDiagram
 class WorktreeManager {
@@ -258,25 +292,34 @@ class WorktreeManager {
 +create_worktree(branch) Worktree
 +cleanup_worktree(branch) void
 +list_worktrees() List[Worktree]
--create_paths() void
--update_comments() void
++_resolve_base_ref() str
++_ref_exists(ref) bool
+-_cleanup_path(path) void
 }
 class Worktree {
 +Path path
 +str branch
++str base_ref
 +bool is_active
 +cleanup() void
 }
+class Scanner {
++scan() ProjectSignals
++_scan_git(signals) void
+}
 WorktreeManager --> Worktree : "管理"
+WorktreeManager --> Scanner : "使用"
 ```
 
 **图表来源**
 - [worktree.py:43-66](file://vivify/pr_mode/worktree.py#L43-L66)
 - [worktree.py:22-27](file://vivify/pr_mode/worktree.py#L22-L27)
+- [scanner.py:336-366](file://vivify/intelligence/scanner.py#L336-L366)
 
 **章节来源**
 - [worktree.py:43-66](file://vivify/pr_mode/worktree.py#L43-L66)
 - [worktree.py:22-27](file://vivify/pr_mode/worktree.py#L22-L27)
+- [scanner.py:336-366](file://vivify/intelligence/scanner.py#L336-L366)
 
 ### 特征管道增强 (feature_pipeline.py) 分析
 
@@ -291,6 +334,11 @@ WorktreeManager --> Worktree : "管理"
 - **正常状态**：`"deployed"` → `deployed_with_issues` → `"deployed"`
 - **错误状态**：`"rejected"` → `deployed_with_issues`
 - **作用**：提供更好的错误恢复机制
+
+#### 分支信息传递
+- **新增功能**：`push_and_open`方法支持`base`参数传递
+- **作用**：允许外部传入自定义基础分支信息
+- **实现**：通过`base=base or self.config.base_branch`处理参数
 
 ```mermaid
 flowchart TD
@@ -312,6 +360,38 @@ MarkDeployed --> End
 **章节来源**
 - [feature_pipeline.py:222-250](file://vivify/kernel/feature_pipeline.py#L222-L250)
 
+### 智能分析模块集成 (scanner.py) 分析
+
+智能分析模块提供了工作树环境下的仓库slug检测功能：
+
+#### 仓库slug检测机制
+- **新增功能**：`_scan_git`方法检测默认分支
+- **作用**：通过`git branch --show-current`获取当前分支名称
+- **实现**：使用子进程执行git命令并解析输出
+
+#### 环境检测增强
+- **新增功能**：检测Git远程URL和当前分支
+- **作用**：为工作树管理提供准确的环境信息
+- **实现**：使用`git remote get-url origin`和`git branch --show-current`命令
+
+```mermaid
+sequenceDiagram
+participant Analyzer as "智能分析器"
+participant Git as "Git命令"
+participant Worktree as "工作树管理器"
+Analyzer->>Git : 获取默认分支
+Git-->>Analyzer : 当前分支名称
+Analyzer->>Worktree : 传递分支信息
+Worktree->>Worktree : 解析基础引用
+Worktree-->>Analyzer : 工作树创建结果
+```
+
+**图表来源**
+- [scanner.py:336-366](file://vivify/intelligence/scanner.py#L336-L366)
+
+**章节来源**
+- [scanner.py:336-366](file://vivify/intelligence/scanner.py#L336-L366)
+
 ## 依赖关系分析
 
 ```mermaid
@@ -327,15 +407,18 @@ F[worktree.py] --> A
 G[feature_pipeline.py] --> D
 G --> E
 G --> F
+H[scanner.py] --> F
 end
 subgraph "测试依赖"
-H[test_pr_mode.py] --> D
-I[test_self_grow_guard.py] --> E
-J[init_cmd.py] --> A
+I[test_pr_mode.py] --> D
+J[test_self_grow_guard.py] --> E
+K[init_cmd.py] --> A
 end
-A --> K[环境变量]
-A --> L[路径配置]
-A --> M[标签配置]
+A --> L[环境变量]
+A --> M[路径配置]
+A --> N[标签配置]
+O[智能分析] --> P[仓库slug检测]
+Q[工作树管理] --> R[空分支检测]
 ```
 
 **图表来源**
@@ -347,7 +430,8 @@ A --> M[标签配置]
 2. **标签系统依赖**：PR创建和自增长守卫都依赖统一的标签系统
 3. **环境变量依赖**：PR创建器依赖环境变量继承功能
 4. **路径系统依赖**：工作树管理和配置系统共享路径配置
-5. **测试覆盖依赖**：测试文件覆盖所有核心模块的功能
+5. **智能分析依赖**：工作树管理依赖智能分析模块的环境检测
+6. **测试覆盖依赖**：测试文件覆盖所有核心模块的功能
 
 **章节来源**
 - [init_cmd.py:200-230](file://vivify/cli/init_cmd.py#L200-L230)
@@ -377,12 +461,21 @@ A --> M[标签配置]
 - **开销**：异常捕获和状态管理
 - **收益**：提高系统稳定性
 
+#### 仓库slug检测
+- **开销**：额外的git命令执行
+- **收益**：提高分支检测准确性
+
+#### 空分支检测
+- **开销**：额外的引用检查
+- **收益**：提高分支引用的可靠性
+
 ### 优化建议
 
 1. **批量替换**：使用正则表达式进行批量字符串替换
 2. **配置缓存**：缓存配置解析结果，避免重复解析
 3. **异步处理**：对于长时间运行的操作，考虑异步执行
 4. **错误处理**：添加适当的错误处理和重试机制
+5. **智能缓存**：缓存git命令的输出结果，避免重复执行
 
 ## 故障排除指南
 
@@ -418,6 +511,16 @@ A --> M[标签配置]
 **原因**：远程仓库缺少自定义标签
 **解决方案**：创建缺失的标签或等待自动重试
 
+#### 7. 仓库slug检测失败
+**症状**：工作树创建时分支信息不正确
+**原因**：git命令执行失败或权限不足
+**解决方案**：检查git环境配置和权限设置
+
+#### 8. 空分支引用错误
+**症状**：工作树创建时报分支不存在
+**原因**：远程跟踪引用不存在
+**解决方案**：检查远程仓库状态和分支配置
+
 **章节来源**
 - [test_pr_mode.py:97-103](file://tests/unit/test_pr_mode.py#L97-L103)
 
@@ -431,6 +534,8 @@ A --> M[标签配置]
 4. **字符串检查**：`grep -r "auto-heal\|auto_heal\|AUTO_HEAL" . --include="*.py" --include="*.yml" --include="*.md" | wc -l`
 5. **新名称检查**：`grep -r "vivify" . --include="*.py" --include="*.yml" | wc -l`
 6. **环境变量测试**：`python -c "from vivify.pr_mode.pr_creator import _run; import os; print('Environment inherited:', 'GH_TOKEN' in os.environ)"`
+7. **仓库slug检测测试**：`python -c "from vivify.intelligence.scanner import Scanner; s = Scanner('.'); print('Default branch:', s.scan().default_branch)"`
+8. **空分支检测测试**：`python -c "from vivify.pr_mode.worktree import WorktreeManager; wm = WorktreeManager('.'); print('Base ref:', wm._resolve_base_ref())"`
 
 **章节来源**
 - [test_pr_mode.py:97-103](file://tests/unit/test_pr_mode.py#L97-L103)
@@ -449,6 +554,9 @@ Vivify项目的品牌重塑是一个系统性的工程变更，涉及477处字�
    - 环境变量继承功能，确保GitHub认证令牌可靠传递
    - 标签缺失重试机制，提高PR创建的容错能力
    - 特征管道增强PR创建失败的错误处理能力
+   - 工作树环境下的仓库slug检测机制
+   - 空分支检测功能，增强分支引用的可靠性
+   - PR创建和自动合并的分支信息传递机制
 
 ### 技术影响
 
@@ -457,6 +565,7 @@ Vivify项目的品牌重塑是一个系统性的工程变更，涉及477处字�
 - **维护性增强**：统一的命名约定提高了代码可维护性
 - **扩展性改善**：为未来的功能扩展奠定了基础
 - **可靠性增强**：新增的错误处理和重试机制提高了系统稳定性
+- **智能化提升**：智能分析模块为工作树管理提供了更好的环境检测
 
 ### 后续建议
 
@@ -465,5 +574,6 @@ Vivify项目的品牌重塑是一个系统性的工程变更，涉及477处字�
 3. **团队培训**：确保开发团队熟悉新的命名约定
 4. **自动化检查**：建立CI/CD流水线中的字符串检查
 5. **性能监控**：关注新增功能对系统性能的影响
+6. **智能分析集成**：进一步利用智能分析模块提供的环境信息
 
 通过这次品牌重塑和功能增强，Vivify项目建立了更加清晰、稳定和可靠的代码结构，为项目的长期发展奠定了坚实的基础。

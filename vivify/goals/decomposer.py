@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 from dataclasses import dataclass
 from typing import List, Optional, Sequence
 
@@ -118,6 +119,63 @@ class AgentGoalDecomposer(GoalDecomposer):
         self.repo_root = Path(repo_root)
         self.config = config or GoalDecomposerConfig()
 
+    # ── context helpers ────────────────────────────────────────────────────
+    def _get_existing_features(self, db_path: Path) -> list[dict]:
+        """获取已有 feature_requests 列表（排除 rejected/cancelled）。"""
+        if not db_path.exists():
+            return []
+        try:
+            conn = sqlite3.connect(str(db_path))
+            c = conn.cursor()
+            c.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='feature_requests'"
+            )
+            if not c.fetchone():
+                conn.close()
+                return []
+            c.execute("""
+                SELECT title, status, parent_goal, pr_url
+                FROM feature_requests
+                WHERE status NOT IN ('rejected', 'cancelled')
+                ORDER BY id
+            """)
+            features = [
+                {"title": r[0], "status": r[1], "parent_goal": r[2], "pr_url": r[3]}
+                for r in c.fetchall()
+            ]
+            conn.close()
+            return features
+        except Exception:
+            return []
+
+    def _get_kpi_snapshots(self, db_path: Path) -> list[dict]:
+        """获取最新 KPI 快照数据。"""
+        if not db_path.exists():
+            return []
+        try:
+            conn = sqlite3.connect(str(db_path))
+            c = conn.cursor()
+            c.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='kpi_snapshots'"
+            )
+            if not c.fetchone():
+                conn.close()
+                return []
+            c.execute("""
+                SELECT metric_name, value, target_value
+                FROM kpi_snapshots
+                ORDER BY created_at DESC
+                LIMIT 20
+            """)
+            snapshots = [
+                {"name": r[0], "current": r[1], "target": r[2]}
+                for r in c.fetchall()
+            ]
+            conn.close()
+            return snapshots
+        except Exception:
+            return []
+
     # ── interface ──────────────────────────────────────────────────────────
     def parse_goals(self, md_text: str) -> List[Goal]:
         return parse_goals(md_text).goals
@@ -138,6 +196,11 @@ class AgentGoalDecomposer(GoalDecomposer):
                 logger.info("Goal '%s' already meets all KPIs; skipping", goal.name)
                 return []
 
+        # Collect additional context from state.db
+        db_path = self.repo_root / ".vivify" / "state.db"
+        existing_features = self._get_existing_features(db_path)
+        kpi_snapshots_db = self._get_kpi_snapshots(db_path)
+
         prompt = builders.build_goal_decompose(
             goal,
             repo_state=repo_state,
@@ -145,6 +208,8 @@ class AgentGoalDecomposer(GoalDecomposer):
             recent_snapshots=_format_recent_snapshots(recent_snapshots),
             kpi_status=_format_kpi_status(goal, recent_snapshots),
             max_features=self.config.max_features_per_decompose,
+            existing_features=existing_features,
+            kpi_snapshots=kpi_snapshots_db,
         )
         result = self.agent.heal(
             prompt,

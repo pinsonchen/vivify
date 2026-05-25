@@ -27,6 +27,13 @@
 {{ related_knowledge }}
 
 {% endif -%}
+## 前置检查（MUST DO FIRST）
+
+在开始修改前，先确认问题是否仍然存在：
+1. 检查代码库当前状态，确认 feature 所描述的需求确实尚未实现
+2. 如果需求已被实现（比如之前的 PR 已合并），直接结束，不要做任何修改
+3. 直接输出：`{"next_steps": [], "no_change_reason": "功能已存在/之前的 PR 已实现"}`
+
 ## Workspace
 You are inside an isolated git worktree (`{{ workspace }}`). The branch is
 already created and tracks origin. **Never push to the base branch** — push
@@ -36,8 +43,23 @@ your branch and let the kernel open a PR.
 1. Read enough of the codebase to understand the affected areas.
 2. Implement the change end-to-end (code + tests + minimal docs).
 3. Run the project's tests / linters; iterate until they pass.
-4. `git add -A && git commit -m "auto-heal: <one-line summary>"`.
-5. `git push -u origin "$(git rev-parse --abbrev-ref HEAD)"`.
+4. **提交前自检** — 在 commit 前执行 `git status --short` 确认有实际变更（见下方规则）。
+5. `git add -A && git commit -m "auto-heal: <one-line summary>"`.
+6. `git push -u origin "$(git rev-parse --abbrev-ref HEAD)"`.
+
+## 提交前自检（MUST DO）
+
+在执行 `git add -A && git commit` 之前，**必须**检查是否有实际变更：
+
+```bash
+git status --short
+```
+
+- 如果输出为空（没有任何改动），说明当前问题可能已被修复或无需代码变更。
+  - **不要**强行创建空提交或无意义的修改。
+  - 直接输出：`{"next_steps": [], "no_change_reason": "问题已修复/不需要代码变更"}`
+  - **不要** push，让 kernel 跳过此 PR。
+- 只有确实有有意义的代码变更时，才执行 commit 和 push。
 
 {{ git_pr_snippet }}
 
