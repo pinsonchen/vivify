@@ -38,6 +38,20 @@ default branch. The worktree is yours — feel free to install dependencies,
 run linters, run the test suite, etc. **Do not** mutate files outside this
 worktree.
 
+## 网络操作注意事项
+
+- git 操作可能因网络问题超时，如果 `git fetch` 或 `git pull` 失败：
+  - 不要重复多次尝试（最多 1 次重试）
+  - 使用 `--depth=1` 减少数据量
+  - 如果仍然失败，基于当前本地代码状态进行修复
+
+## 空变更处理
+
+- 如果分析后发现问题已被修复或不需要代码变更：
+  - **不要**创建无意义的修改（如只改注释/格式化）
+  - 直接结束，不 push，不 commit
+  - 输出中说明原因：`{"next_steps": [], "no_change_reason": "..."}`
+
 ## Goal
 Make the smallest, most targeted change that resolves the issue above. Avoid
 unrelated refactors. After editing, prove the fix:

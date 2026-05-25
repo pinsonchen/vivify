@@ -38,14 +38,14 @@ code; this is a planning pass only.
 {% endfor %}
 {%- endif %}
 
-{% if existing_features -%}
+{% if existing_features is defined and existing_features -%}
 ## All existing features in database (do NOT re-propose these)
 {% for f in existing_features -%}
 - [{{ f.status }}] {{ f.title }}{% if f.pr_url %} (PR: {{ f.pr_url }}){% endif %}
 {% endfor %}
 {%- endif %}
 
-{% if kpi_snapshots -%}
+{% if kpi_snapshots is defined and kpi_snapshots -%}
 ## Latest KPI metrics from database
 {% for s in kpi_snapshots -%}
 - {{ s.name }}: current={{ s.current }}, target={{ s.target }}
@@ -88,7 +88,7 @@ End your response with a fenced ```json``` block matching this schema:
 }
 ```
 
-ules:
+Rules:
 
 - **Maximum {{ max_features }} features** per goal per round.
 - Each feature must be independently actionable (don't bundle multiple ideas).

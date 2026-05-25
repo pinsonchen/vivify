@@ -50,3 +50,16 @@ End your response with a fenced ```json``` block matching this schema:
 
 Set `needs_admin_review: true` if the change is large, ambiguous, or has
 notable risk and you want a human to confirm before development starts.
+
+## 评估维度（补充）
+
+### 技术可行性
+- 此功能是否需要外部服务/API？如果需要，当前是否可用？
+- 是否有需要人工操作的步骤（如创建账号、配置第三方服务）？
+- 是否涉及需要 AI 无法访问的资源（如付费 API、私有系统）？
+
+### 可部署性
+- 修改完成后，是否可以通过 `git push` + PR 自动部署？
+- 是否涉及数据库迁移、环境变量添加等需要人工介入的步骤？
+
+如果需要人工介入或外部依赖不满足，评估结果应标记为 `"feasible": false` 并在 `"feasibility"` 中说明原因。

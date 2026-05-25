@@ -24,6 +24,21 @@ files or open additional PRs.
 {{ feature.development_result }}
 
 {% endif -%}
+## 验证前提（MUST DO FIRST）
+
+在开始验证前，确认以下前提：
+
+1. **确认 PR 已合并**：
+   ```bash
+   git log --oneline origin/main | head -5
+   ```
+   确认相关提交已在 main 分支上。如果 PR 未合并，直接报告 `"verified": false, "issues": ["PR not yet merged into main"]`。
+
+2. **拉取最新代码**：
+   ```bash
+   git pull origin main
+   ```
+
 ## How to verify
 - Inspect the relevant code paths to confirm the implementation matches.
 - If a test suite covers the area, run it and report pass/fail.
