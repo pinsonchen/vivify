@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Optional, Sequence
 
+from vivify.agents.remote_session import RemoteSession, RemoteSessionManager  # noqa: F401
 from vivify.agents.slot_manager import AGENT_ENV_TAG, wait_for_slot
 from vivify.interfaces.agent import CodingAgent
 from vivify.models import AgentResult
@@ -45,7 +46,19 @@ class QoderCliConfig:
     slot_wait_timeout_seconds: int = 300
     slot_poll_interval_seconds: int = 15
     auto_trust_workspace: bool = True
-    """When ``True`` we pipe ``yes\\n`` on stdin to auto-trust new workdirs."""
+    """When ``True`` we pipe ``yes\n`` on stdin to auto-trust new workdirs."""
+
+    # ── Remote (cloud) execution ─────────────────────────────────────────────
+    use_remote: bool = False
+    """Route ``heal`` calls through qodercli cloud remote sessions."""
+    remote_poll_interval: int = 15
+    """Seconds between status-check polls for a remote session."""
+    remote_timeout: int = 900
+    """Maximum wall-clock seconds to wait for a remote session."""
+    max_concurrent_remote: int = 3
+    """Maximum number of parallel remote sessions (informational for callers)."""
+    plan_agent_for_decompose: bool = True
+    """Use the built-in Plan agent when decomposing goals."""
 
 
 class QoderCliAgent(CodingAgent):
@@ -53,6 +66,18 @@ class QoderCliAgent(CodingAgent):
 
     def __init__(self, cfg: QoderCliConfig | None = None):
         self.cfg = cfg or QoderCliConfig()
+        self._remote_mgr: Optional[RemoteSessionManager] = None
+        if self.cfg.use_remote:
+            self._remote_mgr = RemoteSessionManager(
+                binary=self.cfg.binary_path,
+                model=self.cfg.model,
+                extra_args=list(self.cfg.extra_args) or ["--yolo", "-q"],
+            )
+
+    @property
+    def remote_mgr(self) -> Optional[RemoteSessionManager]:
+        """Lazily-constructed remote session manager (``None`` when not in remote mode)."""
+        return self._remote_mgr
 
     # ── CodingAgent ──────────────────────────────────────────────────────────
     def name(self) -> str:
@@ -83,6 +108,76 @@ class QoderCliAgent(CodingAgent):
         env: Optional[Mapping[str, str]] = None,
         timeout_seconds: Optional[int] = None,
     ) -> AgentResult:
+        """Execute a healing task, routing to remote or local mode as configured."""
+        if self.cfg.use_remote and self._remote_mgr:
+            return self._heal_remote(prompt, workspace=workspace, max_turns=max_turns)
+        return self._heal_local(
+            prompt,
+            max_turns=max_turns,
+            category=category,
+            workspace=workspace,
+            env=env,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def _heal_remote(
+        self,
+        prompt: str,
+        *,
+        workspace: Path,
+        max_turns: int = 100,
+    ) -> AgentResult:
+        """Execute via a qodercli cloud remote session."""
+        import time as _time
+
+        assert self._remote_mgr is not None  # guarded by caller
+        t0 = _time.time()
+        try:
+            session = self._remote_mgr.create_session(
+                task=prompt, workspace=workspace, max_turns=max_turns
+            )
+            session = self._remote_mgr.wait_for_completion(
+                session,
+                poll_interval=self.cfg.remote_poll_interval,
+                timeout=self.cfg.remote_timeout,
+            )
+        except Exception as exc:  # create_session / network failures
+            elapsed = _time.time() - t0
+            logger.exception("Remote session launch failed: %s", exc)
+            return AgentResult(
+                success=False, output="", exit_code=-1,
+                error=str(exc), duration_seconds=elapsed,
+            )
+
+        elapsed = _time.time() - t0
+        if session.status == "completed":
+            output = self._remote_mgr.get_result(session.session_id, workspace)
+            logger.info(
+                "Remote session %s completed in %.1fs", session.session_id, elapsed
+            )
+            return AgentResult(
+                success=True, output=output, exit_code=0,
+                error=None, duration_seconds=elapsed,
+            )
+        else:
+            msg = f"Remote session failed: {session.session_id} (status={session.status})"
+            logger.error(msg)
+            return AgentResult(
+                success=False, output="", exit_code=-1,
+                error=msg, duration_seconds=elapsed,
+            )
+
+    def _heal_local(
+        self,
+        prompt: str,
+        *,
+        max_turns: int,
+        category: str,
+        workspace: Path,
+        env: Optional[Mapping[str, str]] = None,
+        timeout_seconds: Optional[int] = None,
+    ) -> AgentResult:
+        """Execute locally via a blocking qodercli subprocess (original logic)."""
         binary = self._resolve_binary()
         if not binary:
             return AgentResult(

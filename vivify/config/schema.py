@@ -42,6 +42,12 @@ class QoderCliConfig(BaseModel):
     max_concurrent_processes: int = 10
     slot_wait_timeout_seconds: int = 300
     auto_trust_workspace: bool = True
+    # Remote (cloud) execution
+    use_remote: bool = False
+    remote_poll_interval: int = 15
+    remote_timeout: int = 900
+    max_concurrent_remote: int = 3
+    plan_agent_for_decompose: bool = True
 
 
 class AgentConfig(BaseModel):
