@@ -136,6 +136,7 @@ def run_decompose(args: argparse.Namespace) -> int:
         agent=agent, repo_root=Path.cwd(),
         config=GoalDecomposerConfig(
             max_features_per_decompose=cfg.goals.max_features_per_decompose,
+            plan_agent_for_decompose=qc.plan_agent_for_decompose,
         ),
     )
 

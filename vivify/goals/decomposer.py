@@ -38,6 +38,7 @@ class GoalDecomposerConfig:
     max_turns: int = 30
     timeout_seconds: int = 600
     dedupe_threshold: float = 0.85
+    plan_agent_for_decompose: bool = True
 
 
 def _last_json_block(output: str, key: str) -> Optional[dict]:
@@ -217,6 +218,7 @@ class AgentGoalDecomposer(GoalDecomposer):
             category="goal_decompose",
             workspace=self.repo_root,
             timeout_seconds=self.config.timeout_seconds,
+            agent_name="Plan" if self.config.plan_agent_for_decompose else None,
         )
         output = result.output or ""
         payload = _last_json_block(output, "new_features") or {}

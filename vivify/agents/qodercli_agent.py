@@ -107,6 +107,7 @@ class QoderCliAgent(CodingAgent):
         workspace: Path,
         env: Optional[Mapping[str, str]] = None,
         timeout_seconds: Optional[int] = None,
+        agent_name: Optional[str] = None,
     ) -> AgentResult:
         """Execute a healing task, routing to remote or local mode as configured."""
         if self.cfg.use_remote and self._remote_mgr:
@@ -118,6 +119,7 @@ class QoderCliAgent(CodingAgent):
             workspace=workspace,
             env=env,
             timeout_seconds=timeout_seconds,
+            agent_name=agent_name,
         )
 
     def _heal_remote(
@@ -176,6 +178,7 @@ class QoderCliAgent(CodingAgent):
         workspace: Path,
         env: Optional[Mapping[str, str]] = None,
         timeout_seconds: Optional[int] = None,
+        agent_name: Optional[str] = None,
     ) -> AgentResult:
         """Execute locally via a blocking qodercli subprocess (original logic)."""
         binary = self._resolve_binary()
@@ -206,6 +209,8 @@ class QoderCliAgent(CodingAgent):
             "--max-turns", str(int(max_turns or self.cfg.max_turns_default)),
             "-w", str(workspace),
         ]
+        if agent_name:
+            cmd.extend(["--agent", agent_name])
 
         # Slot gating — never exceed the configured concurrent cap.
         if self.cfg.max_concurrent_processes > 0:

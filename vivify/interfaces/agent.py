@@ -32,6 +32,7 @@ class CodingAgent(ABC):
         workspace: Path,
         env: Optional[Mapping[str, str]] = None,
         timeout_seconds: Optional[int] = None,
+        agent_name: Optional[str] = None,
     ) -> AgentResult:
         """Run the agent against ``prompt`` inside ``workspace``.
 

@@ -165,6 +165,7 @@ class Kernel:
             repo_root=self.deps.repo_root,
             config=GoalDecomposerConfig(
                 max_features_per_decompose=self.config.goals.max_features_per_decompose,
+                plan_agent_for_decompose=self.config.agent.qodercli.plan_agent_for_decompose,
             ),
         )
         self._last_decompose_time: float = 0.0

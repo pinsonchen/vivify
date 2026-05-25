@@ -334,6 +334,222 @@ class FeaturePipeline:
             duration=report.durations["verify"],
         )
 
+    # ── parallel (batch) development ────────────────────────────────────────
+
+    def develop_batch(
+        self,
+        features: list[FeatureRequest],
+        *,
+        round_num: int = 0,
+    ) -> list[FeatureRunReport]:
+        """Develop multiple features in parallel via remote sessions.
+
+        When the agent has a :attr:`remote_mgr` and ``use_remote`` is enabled,
+        remote sessions are launched concurrently up to
+        ``max_concurrent_remote``.  Otherwise falls back to serial execution.
+        """
+        remote_mgr = getattr(self.agent, "remote_mgr", None)
+        agent_cfg = getattr(self.agent, "cfg", None)
+
+        # Fallback: no remote manager → serial
+        if not remote_mgr or not agent_cfg or not getattr(agent_cfg, "use_remote", False):
+            reports: list[FeatureRunReport] = []
+            for f in features:
+                reports.append(self.run(f, round_num=round_num))
+            return reports
+
+        max_concurrent: int = getattr(agent_cfg, "max_concurrent_remote", 3)
+        poll_interval: int = getattr(agent_cfg, "remote_poll_interval", 15)
+        timeout: int = getattr(agent_cfg, "remote_timeout", 900)
+
+        # sessions maps feature_id → (RemoteSession, feature, Worktree)
+        sessions: dict = {}
+        reports = []
+
+        # Launch remote sessions (bounded by max_concurrent)
+        for feature in features[:max_concurrent]:
+            report = FeatureRunReport(feature_id=feature.id, status="developing")
+            reports.append(report)
+            try:
+                prompt = self._build_develop_prompt(feature)
+                wt = self._prepare_worktree(feature)
+                session = remote_mgr.create_session(
+                    task=prompt,
+                    workspace=wt.path,
+                    max_turns=self.config.max_turns_develop,
+                )
+                sessions[feature.id] = (session, feature, wt, report)
+                self._update(feature, status="developing")
+            except Exception as e:
+                logger.error(
+                    "Failed to start remote session for %s: %s", feature.title, e
+                )
+                self._handle_remote_failure(feature, report)
+
+        # Poll all active sessions
+        start = time.time()
+        while sessions and (time.time() - start) < timeout:
+            for fid in list(sessions.keys()):
+                session, feature, wt, report = sessions[fid]
+                status = remote_mgr.check_status(session.session_id)
+                if status == "completed":
+                    del sessions[fid]
+                    self._finalize_remote_feature(
+                        feature, wt, report, remote_mgr, round_num=round_num
+                    )
+                elif status == "failed":
+                    del sessions[fid]
+                    self._handle_remote_failure(feature, report)
+                    try:
+                        self.worktrees.remove(wt)
+                    except Exception as exc:
+                        logger.warning("worktree cleanup failed: %s", exc)
+            if sessions:
+                time.sleep(poll_interval)
+
+        # Timeout remaining sessions
+        for fid, (session, feature, wt, report) in sessions.items():
+            logger.warning(
+                "Remote session timed out for feature: %s", feature.title
+            )
+            self._handle_remote_failure(feature, report)
+            try:
+                self.worktrees.remove(wt)
+            except Exception as exc:
+                logger.warning("worktree cleanup failed: %s", exc)
+
+        return reports
+
+    # ── batch helpers ──────────────────────────────────────────────────────
+
+    def _build_develop_prompt(self, feature: FeatureRequest) -> str:
+        """Construct the develop prompt for *feature* (reuses prompt builder)."""
+        history = load_history(self.storage, "feature_develop")
+        approach = getattr(feature, "_approach", "")
+        slug = feature.title or f"feature-{feature.id}"
+        # workspace placeholder — will be replaced by actual worktree path later
+        # but builder needs a string.
+        return builders.build_feature_develop(
+            feature,
+            workspace=slug,
+            recent_history=history,
+            implementation_approach=approach,
+        )
+
+    def _prepare_worktree(self, feature: FeatureRequest):
+        """Create a git worktree for *feature* development."""
+        slug = feature.title or f"feature-{feature.id}"
+        return self.worktrees.create(slug)
+
+    def _finalize_remote_feature(
+        self,
+        feature: FeatureRequest,
+        wt,
+        report: FeatureRunReport,
+        remote_mgr,
+        *,
+        round_num: int = 0,
+    ) -> None:
+        """Post-process a successfully completed remote feature session."""
+        start = time.time()
+        try:
+            output = remote_mgr.get_result(
+                getattr(wt, "_session_id", "") or "", wt.path
+            ) if hasattr(wt, "path") else ""
+            # Attempt to get result from git log in worktree
+            output = remote_mgr.get_result("", wt.path)
+
+            # Quality gate
+            quality = run_quality_checks(
+                wt.path,
+                base_ref=wt.base_ref,
+                run_pytest=self.config.quality_run_pytest,
+                test_command=self.config.quality_test_command,
+            )
+            report.quality = quality
+            if not quality.passed:
+                self._update(
+                    feature, status="deployed_with_issues",
+                    development_result=(quality.summary or "")[:2000],
+                )
+                report.status = "deployed_with_issues"
+                return
+
+            # PR creation
+            commit_info = parsers.parse_commit_info(output, repo_url=self.config.repo_url)
+            decision = classify_worktree(wt.path, base_ref=wt.base_ref)
+            try:
+                pr = self.pr_creator.push_and_open(
+                    wt,
+                    title=feature.title[:200],
+                    body=self._render_pr_body(feature, output=output, quality=quality),
+                    decision=decision,
+                )
+            except Exception as pr_err:
+                logger.error(
+                    "PR creation failed for feature #%s: %s", feature.id, pr_err
+                )
+                self._update(
+                    feature, status="deployed_with_issues",
+                    development_result=f"PR creation failed: {pr_err}"[:2000],
+                )
+                report.status = "deployed_with_issues"
+                report.error = f"pr_create: {pr_err}"
+                return
+
+            report.pr = pr
+            self._update(
+                feature, status="deployed",
+                pr_url=pr.url,
+                commit_hash=commit_info.get("commit_hash"),
+                development_result=(output[-2000:] if output else ""),
+            )
+
+            # Auto-merge
+            if self.auto_merge is not None:
+                merge_outcome = self.auto_merge.try_merge(
+                    pr, decision=decision, cwd=wt.path
+                )
+                if merge_outcome.merged:
+                    logger.info("Feature PR #%s merged (batch)", feature.id)
+
+            # Followups
+            followups = self._create_followups(feature, output)
+            report.followups_created = followups
+            report.status = "deployed"
+        except Exception as e:
+            logger.exception(
+                "Finalization failed for feature #%s: %s", feature.id, e
+            )
+            self._handle_remote_failure(feature, report)
+        finally:
+            report.durations["develop"] = time.time() - start
+            self._log_action(
+                round_num=round_num,
+                action_type="feature_develop",
+                status="success" if report.status == "deployed" else "failed",
+                feature=feature,
+                summary="(batch remote)",
+                details={"followups": report.followups_created,
+                         "pr_url": report.pr.url if report.pr else None},
+                duration=report.durations["develop"],
+                pr_url=report.pr.url if report.pr else None,
+                commit_hash=feature.commit_hash,
+            )
+            try:
+                self.worktrees.remove(wt)
+            except Exception as exc:
+                logger.warning("worktree cleanup failed: %s", exc)
+
+    def _handle_remote_failure(
+        self, feature: FeatureRequest, report: FeatureRunReport
+    ) -> None:
+        """Mark a feature as failed after remote session error/timeout."""
+        self._update(feature, status="deployed_with_issues",
+                     development_result="Remote session failed or timed out")
+        report.status = "deployed_with_issues"
+        report.error = "remote_session_failed"
+
     # ── helpers ────────────────────────────────────────────────────────────
     def _create_followups(self, parent: FeatureRequest, output: str) -> int:
         steps = parsers.parse_next_steps(output)[: self.config.max_followups]
