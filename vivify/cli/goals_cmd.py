@@ -158,6 +158,7 @@ def run_decompose(args: argparse.Namespace) -> int:
                 storage.create_feature(FeatureRequest(
                     title=s.title, description=s.description, type=s.type,
                     parent_goal=goal.name, priority=s.priority,
+                    verification_method=s.verification_method,
                 ))
                 total_created += 1
     if not args.dry_run:

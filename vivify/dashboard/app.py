@@ -407,6 +407,14 @@ def create_app(state_dir: Optional[Path] = None) -> FastAPI:
             return []
         return db.get_features(status=status, limit=limit)
 
+    @app.get("/api/features/stats")
+    async def api_feature_stats():
+        """返回特性统计信息（按类型/优先级分布、retry 数量）。"""
+        db = get_db()
+        if not db:
+            return {"total": 0, "by_type": {}, "by_priority": {}, "retried_count": 0}
+        return db.get_feature_stats()
+
     @app.get("/api/features/{fid}")
     async def api_feature_detail(fid: int):
         db = get_db()
@@ -415,7 +423,22 @@ def create_app(state_dir: Optional[Path] = None) -> FastAPI:
         feature = db.get_feature(fid)
         if not feature:
             return {"error": "特性请求不存在"}
-        return feature
+        data = dict(feature)
+        # 解析 verification_result JSON
+        if data.get("verification_result"):
+            try:
+                data["verification_result"] = json.loads(data["verification_result"])
+            except Exception:
+                pass
+        # 组装 lifecycle 对象
+        data["lifecycle"] = {
+            "created_at": data.get("created_at"),
+            "evaluated_at": data.get("evaluated_at"),
+            "started_at": data.get("started_at"),
+            "verified_at": data.get("verified_at"),
+            "completed_at": data.get("completed_at"),
+        }
+        return data
 
     @app.get("/api/kpi/snapshots")
     async def api_kpi_snapshots(

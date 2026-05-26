@@ -183,13 +183,71 @@
         Object.entries(groups).forEach(([status, items]) => {
             const col = document.querySelector(`.kanban-col[data-status="${status}"] .kanban-cards`);
             if (!col) return;
-            col.innerHTML = items.map(f => `
-                <div class="kanban-card">
-                    <div class="priority">${f.priority || 'P2'} · ${f.type || 'feature'}</div>
-                    <div class="title">${f.title}</div>
-                </div>
-            `).join('') || '<div style="color:var(--text-muted);font-size:0.8rem">暂无</div>';
+            col.innerHTML = items.map(f => renderFeatureCard(f)).join('')
+                || '<div style="color:var(--text-muted);font-size:0.8rem">暂无</div>';
         });
+
+        // 加载统计卡片
+        loadFeatureStats();
+    }
+
+    function renderFeatureCard(feature) {
+        const priority = feature.priority || 'P3';
+        const type = feature.type || 'feature';
+        const badges = `
+            <div class="card-badges">
+                <span class="badge badge-${priority}">${priority}</span>
+                <span class="badge badge-${type}">${type}</span>
+                ${feature.retry_count > 0 ? `<span class="badge badge-retry">⟳${feature.retry_count}</span>` : ''}
+            </div>`;
+        const parentInfo = feature.parent_id
+            ? `<div class="card-parent">↳ derived from #${feature.parent_id}</div>` : '';
+        return `<div class="kanban-card" onclick="showFeatureDetails(${feature.id})">
+            <div class="title">${feature.title}</div>
+            ${badges}
+            ${parentInfo}
+        </div>`;
+    }
+
+    // --- 特性统计卡片 ---
+    async function loadFeatureStats() {
+        const stats = await api('/api/features/stats');
+        const grid = document.getElementById('feature-stats-grid');
+        if (!grid || !stats) return;
+
+        const byType = stats.by_type || {};
+        const byPriority = stats.by_priority || {};
+
+        const typeItems = Object.entries(byType)
+            .map(([k, v]) => `<span class="badge badge-${k}">${k}: ${v}</span>`).join(' ');
+        const p0 = byPriority['P0'] || 0;
+        const p1 = byPriority['P1'] || 0;
+        const p2 = byPriority['P2'] || 0;
+        const p3 = byPriority['P3'] || 0;
+
+        grid.innerHTML = `
+            <div class="stat-card">
+                <div class="stat-value">${stats.total || 0}</div>
+                <div class="stat-label">总特性数</div>
+            </div>
+            <div class="stat-card">
+                <div style="display:flex;flex-direction:column;gap:4px;align-items:center">${typeItems || '-'}</div>
+                <div class="stat-label" style="margin-top:6px">按类型</div>
+            </div>
+            <div class="stat-card">
+                <div style="font-size:0.9rem;color:var(--text-primary);line-height:1.8">
+                    <span class="badge badge-P0">P0: ${p0}</span>
+                    <span class="badge badge-P1">P1: ${p1}</span>
+                    <span class="badge badge-P2">P2: ${p2}</span>
+                    <span class="badge badge-P3">P3: ${p3}</span>
+                </div>
+                <div class="stat-label" style="margin-top:4px">按优先级</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" style="color:var(--warning)">${stats.retried_count || 0}</div>
+                <div class="stat-label">超时重试</div>
+            </div>
+        `;
     }
 
     // --- KPI 趋势图 ---
@@ -535,4 +593,106 @@
     // 将 switchInstance 暴露到全局（HTML onchange 回调需要）
     window.switchInstance = switchInstance;
 
-})();
+    // --- 特性详情侧边栏 ---
+    async function showFeatureDetails(featureId) {
+        const sidebar = document.getElementById('feature-sidebar');
+        if (!sidebar) return;
+        sidebar.classList.remove('hidden');
+        // 先显示加载状态
+        document.getElementById('sidebar-title').textContent = `#${featureId} 加载中…`;
+        document.getElementById('sidebar-body').innerHTML = '<div style="padding:1rem;color:var(--text-muted)">Loading...</div>';
+        setTimeout(() => sidebar.classList.add('open'), 10);
+
+        const feature = await api(`/api/features/${featureId}`);
+        if (!feature || feature.error) {
+            document.getElementById('sidebar-body').innerHTML =
+                `<div style="color:var(--danger)">${feature ? feature.error : '请求失败'}</div>`;
+            return;
+        }
+        document.getElementById('sidebar-title').textContent = `#${feature.id} ${feature.title}`;
+        document.getElementById('sidebar-body').innerHTML = buildFeatureDetailHTML(feature);
+    }
+
+    function buildFeatureDetailHTML(f) {
+        const lifecycle = f.lifecycle || {};
+        const steps = [
+            { key: 'created_at',   label: 'Created' },
+            { key: 'evaluated_at', label: 'Evaluated' },
+            { key: 'started_at',   label: 'Started' },
+            { key: 'verified_at',  label: 'Verified' },
+            { key: 'completed_at', label: 'Done' },
+        ];
+        const lifecycleBar = steps.map(s => {
+            const val = lifecycle[s.key];
+            const cls = val ? 'completed' : '';
+            const tip = val ? `${s.label}: ${new Date(val).toLocaleString('zh-CN')}` : s.label;
+            return `<div class="lifecycle-step ${cls}" title="${tip}"></div>`;
+        }).join('');
+        const lifecycleLabels = steps.map(s =>
+            `<span>${s.label}</span>`
+        ).join('');
+
+        let html = `
+            <div class="detail-section">
+                <div class="card-badges" style="margin-bottom:0.75rem">
+                    <span class="badge badge-${f.priority || 'P3'}">${f.priority || '—'}</span>
+                    <span class="badge badge-${f.type || 'feature'}">${f.type || 'feature'}</span>
+                    <span class="badge" style="background:#3b4261;color:#c0caf5">${f.status || '-'}</span>
+                    ${f.retry_count > 0
+                        ? `<span class="badge badge-retry">⟳ retry: ${f.retry_count}</span>` : ''}
+                </div>
+            </div>
+            <div class="detail-section">
+                <h4>Lifecycle</h4>
+                <div class="lifecycle-bar">${lifecycleBar}</div>
+                <div class="lifecycle-labels">${lifecycleLabels}</div>
+            </div>`;
+
+        if (f.description) {
+            html += `<div class="detail-section"><h4>Description</h4><p>${escHtml(f.description)}</p></div>`;
+        }
+        if (f.verification_method) {
+            html += `<div class="detail-section"><h4>Verification Method</h4><pre>${escHtml(f.verification_method)}</pre></div>`;
+        }
+        if (f.verification_result) {
+            let vr = f.verification_result;
+            if (typeof vr === 'string') { try { vr = JSON.parse(vr); } catch(e) {} }
+            html += `<div class="detail-section"><h4>Verification Result</h4><pre>${escHtml(JSON.stringify(vr, null, 2))}</pre></div>`;
+        }
+        if (f.feasibility) {
+            html += `<div class="detail-section"><h4>Feasibility</h4><p>${escHtml(f.feasibility)}</p></div>`;
+        }
+        if (f.pr_url) {
+            html += `<div class="detail-section"><h4>PR</h4><a href="${f.pr_url}" target="_blank">${escHtml(f.pr_url)}</a></div>`;
+        }
+        if (f.parent_id) {
+            html += `<div class="detail-section"><h4>Parent</h4><p>Derived from feature #${f.parent_id}</p></div>`;
+        }
+        if (f.batch_commit_hash) {
+            html += `<div class="detail-section"><h4>Batch Commit</h4><pre>${escHtml(f.batch_commit_hash)}</pre></div>`;
+        }
+        return html;
+    }
+
+    function escHtml(str) {
+        if (!str) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    // 关闭侧边栏
+    document.addEventListener('click', function(e) {
+        if (e.target.classList.contains('sidebar-close')) {
+            const sidebar = document.getElementById('feature-sidebar');
+            sidebar.classList.remove('open');
+            setTimeout(() => sidebar.classList.add('hidden'), 300);
+        }
+    });
+
+    // 暴露 showFeatureDetails 到全局（kanban 卡片 onclick 需要）
+    window.showFeatureDetails = showFeatureDetails;
+
+})()

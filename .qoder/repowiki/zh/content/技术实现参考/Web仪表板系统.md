@@ -13,11 +13,17 @@
 - [vivify/dashboard/static/app.js](file://vivify/dashboard/static/app.js)
 - [vivify/storage/sqlite_provider.py](file://vivify/storage/sqlite_provider.py)
 - [vivify/storage/migrations/0001_init.sql](file://vivify/storage/migrations/0001_init.sql)
+- [vivify/storage/migrations/0002_add_verification_method.sql](file://vivify/storage/migrations/0002_add_verification_method.sql)
+- [vivify/storage/migrations/0003_enhance_feature_model.sql](file://vivify/storage/migrations/0003_enhance_feature_model.sql)
 - [vivify/models/feature.py](file://vivify/models/feature.py)
 - [vivify/models/snapshot.py](file://vivify/models/snapshot.py)
 - [vivify/config/loader.py](file://vivify/config/loader.py)
 - [vivify/kernel/health_monitor.py](file://vivify/kernel/health_monitor.py)
 - [vivify/probes/builtin/site_health.yml](file://vivify/probes/builtin/site_health.yml)
+- [vivify/goals/decomposer.py](file://vivify/goals/decomposer.py)
+- [vivify/kernel/feature_pipeline.py](file://vivify/kernel/feature_pipeline.py)
+- [vivify/agents/prompts/templates/feature_verify.md.j2](file://vivify/agents/prompts/templates/feature_verify.md.j2)
+- [vivify/agents/prompts/parsers.py](file://vivify/agents/prompts/parsers.py)
 - [pyproject.toml](file://pyproject.toml)
 - [README.md](file://README.md)
 </cite>
@@ -29,6 +35,8 @@
 - 前端实现配置完整性检查的可视化展示，包括分数条、检查列表和修复建议
 - 新增配置健康度卡片，实时显示项目配置状态和改进建议
 - 集成探针系统中的站点健康监控功能，支持部署站点的可达性检查
+- **数据库迁移更新**：新增 verification_method 列支持特征验证方法定义，增强特征验证功能
+- **数据库迁移架构更新**：新增 migration 0003 生命周期跟踪字段支持，包括 image_urls、idea_id、retry_count、batch_commit_hash、verification_result 及时间戳字段的数据库支持和向后兼容性设计
 
 ## 目录
 1. [简介](#简介)
@@ -38,13 +46,14 @@
 5. [详细组件分析](#详细组件分析)
 6. [配置健康监控系统](#配置健康监控系统)
 7. [多实例管理功能](#多实例管理功能)
-8. [依赖关系分析](#依赖关系分析)
-9. [性能考虑](#性能考虑)
-10. [故障排除指南](#故障排除指南)
-11. [结论](#结论)
+8. [数据库迁移与存储更新](#数据库迁移与存储更新)
+9. [依赖关系分析](#依赖关系分析)
+10. [性能考虑](#性能考虑)
+11. [故障排除指南](#故障排除指南)
+12. [结论](#结论)
 
 ## 简介
-本项目是一个基于 FastAPI 的 Web 仪表板系统，用于可视化 Vivify 自愈引擎的状态、历史动作、特性开发进度、KPI 趋势以及实时日志流。该系统通过只读 SQLite 数据库连接提供数据查询能力，并以静态资源的形式提供前端界面。**重大更新**：现已支持配置健康监控系统，提供项目配置完整性检查、实时健康状态监控和智能修复建议，大幅增强了系统的实用性和维护性。
+本项目是一个基于 FastAPI 的 Web 仪表板系统，用于可视化 Vivify 自愈引擎的状态、历史动作、特性开发进度、KPI 趋势以及实时日志流。该系统通过只读 SQLite 数据库连接提供数据查询能力，并以静态资源的形式提供前端界面。**重大更新**：现已支持配置健康监控系统，提供项目配置完整性检查、实时健康状态监控和智能修复建议，大幅增强了系统的实用性和维护性。**数据库迁移更新**：新增 verification_method 列支持特征验证方法定义，为特征验证流程提供结构化支持。**数据库迁移架构更新**：新增 migration 0003 生命周期跟踪字段支持，包括 image_urls、idea_id、retry_count、batch_commit_hash、verification_result 及时间戳字段的数据库支持和向后兼容性设计。
 
 ## 项目结构
 该项目采用模块化组织方式，主要分为以下几部分：
@@ -78,12 +87,18 @@ end
 subgraph "存储与模型"
 SQLite_Provider["storage/sqlite_provider.py"]
 Schema_SQL["storage/migrations/0001_init.sql"]
+Verification_Migration["storage/migrations/0002_add_verification_method.sql<br/>新增verification_method列"]
+Lifecycle_Migration["storage/migrations/0003_enhance_feature_model.sql<br/>新增生命周期跟踪字段"]
 Feature_Model["models/feature.py"]
 Snapshot_Model["models/snapshot.py"]
 end
 subgraph "配置与工具"
 Config_Loader["config/loader.py"]
 Instance_Registry["~/.vivify/instances.json<br/>实例注册表"]
+Goal_Decomposer["goals/decomposer.py<br/>特征分解器"]
+Feature_Pipeline["kernel/feature_pipeline.py<br/>特征流水线"]
+Verify_Template["agents/prompts/templates/feature_verify.md.j2<br/>验证模板"]
+Verify_Parser["agents/prompts/parsers.py<br/>验证结果解析"]
 end
 Main_Entry --> CLI_Main
 CLI_Main --> CLI_Dashboard
@@ -97,8 +112,14 @@ Index_HTML --> Style_CSS
 Index_HTML --> App_JS
 Dash_DB --> SQLite_Provider
 SQLite_Provider --> Schema_SQL
+SQLite_Provider --> Verification_Migration
+SQLite_Provider --> Lifecycle_Migration
 Feature_Model --> SQLite_Provider
 Snapshot_Model --> SQLite_Provider
+Goal_Decomposer --> Feature_Model
+Feature_Pipeline --> Feature_Model
+Feature_Pipeline --> Verify_Template
+Feature_Pipeline --> Verify_Parser
 ```
 
 **图表来源**
@@ -113,11 +134,17 @@ Snapshot_Model --> SQLite_Provider
 - [vivify/dashboard/static/app.js:1-539](file://vivify/dashboard/static/app.js#L1-L539)
 - [vivify/storage/sqlite_provider.py:1-200](file://vivify/storage/sqlite_provider.py#L1-L200)
 - [vivify/storage/migrations/0001_init.sql:1-100](file://vivify/storage/migrations/0001_init.sql#L1-L100)
-- [vivify/models/feature.py:1-87](file://vivify/models/feature.py#L1-L87)
+- [vivify/storage/migrations/0002_add_verification_method.sql:1-7](file://vivify/storage/migrations/0002_add_verification_method.sql#L1-L7)
+- [vivify/storage/migrations/0003_enhance_feature_model.sql:1-19](file://vivify/storage/migrations/0003_enhance_feature_model.sql#L1-L19)
+- [vivify/models/feature.py:1-101](file://vivify/models/feature.py#L1-L101)
 - [vivify/models/snapshot.py:1-48](file://vivify/models/snapshot.py#L1-L48)
 - [vivify/config/loader.py:1-78](file://vivify/config/loader.py#L1-L78)
 - [vivify/kernel/health_monitor.py:1-141](file://vivify/kernel/health_monitor.py#L1-L141)
 - [vivify/probes/builtin/site_health.yml:1-52](file://vivify/probes/builtin/site_health.yml#L1-L52)
+- [vivify/goals/decomposer.py:58-77](file://vivify/goals/decomposer.py#L58-L77)
+- [vivify/kernel/feature_pipeline.py:175-338](file://vivify/kernel/feature_pipeline.py#L175-L338)
+- [vivify/agents/prompts/templates/feature_verify.md.j2:1-53](file://vivify/agents/prompts/templates/feature_verify.md.j2#L1-L53)
+- [vivify/agents/prompts/parsers.py:96-131](file://vivify/agents/prompts/parsers.py#L96-L131)
 
 **章节来源**
 - [vivify/__main__.py:1-6](file://vivify/__main__.py#L1-L6)
@@ -131,7 +158,9 @@ Snapshot_Model --> SQLite_Provider
 - [vivify/dashboard/static/app.js:1-539](file://vivify/dashboard/static/app.js#L1-L539)
 - [vivify/storage/sqlite_provider.py:1-200](file://vivify/storage/sqlite_provider.py#L1-L200)
 - [vivify/storage/migrations/0001_init.sql:1-100](file://vivify/storage/migrations/0001_init.sql#L1-L100)
-- [vivify/models/feature.py:1-87](file://vivify/models/feature.py#L1-L87)
+- [vivify/storage/migrations/0002_add_verification_method.sql:1-7](file://vivify/storage/migrations/0002_add_verification_method.sql#L1-L7)
+- [vivify/storage/migrations/0003_enhance_feature_model.sql:1-19](file://vivify/storage/migrations/0003_enhance_feature_model.sql#L1-L19)
+- [vivify/models/feature.py:1-101](file://vivify/models/feature.py#L1-L101)
 - [vivify/models/snapshot.py:1-48](file://vivify/models/snapshot.py#L1-L48)
 - [vivify/config/loader.py:1-78](file://vivify/config/loader.py#L1-L78)
 
@@ -145,6 +174,8 @@ Snapshot_Model --> SQLite_Provider
 - 健康监控内核：提供 KPI 趋势回归检测和自动化优化建议
 - 探针系统：内置站点健康监控探针，检测部署站点可达性
 - 存储与模型：定义数据结构和持久化方案
+- **特征验证系统**：支持结构化的特征验证方法定义和执行
+- **生命周期跟踪系统**：支持特征的完整生命周期跟踪，包括重试次数、批量提交、验证结果和时间戳
 
 **章节来源**
 - [vivify/cli/main.py:1-58](file://vivify/cli/main.py#L1-L58)
@@ -175,13 +206,23 @@ DBLayer["数据库访问层<br/>DashboardDB"]
 Storage["存储提供者<br/>SqliteStorageProvider"]
 InstanceMgr["实例管理器<br/>实例注册表 + 状态监控"]
 ConfigHealth["配置健康检查器<br/>配置完整性检查 + 修复建议"]
+FeaturePipeline["特征流水线<br/>特征分解 + 验证方法处理 + 生命周期跟踪"]
 end
 subgraph "数据层"
 SQLiteDB["SQLite 数据库<br/>state.db"]
-Schema["数据库模式<br/>0001_init.sql"]
+Schema["数据库模式<br/>0001_init.sql + 0002_add_verification_method.sql + 0003_enhance_feature_model.sql"]
 InstanceRegistry["实例注册表<br/>~/.vivify/instances.json"]
 ConfigFile["配置文件<br/>.vivify.yml + 环境变量"]
-end
+GoalSpecs["目标规范<br/>GOALS.md + 特征规范"]
+VerifyTemplate["验证模板<br/>feature_verify.md.j2"]
+VerifyParser["验证结果解析<br/>parse_verification_result"]
+End_Time_Stamp["时间戳字段<br/>evaluated_at/started_at/verified_at/completed_at"]
+Retry_Count["重试计数<br/>retry_count"]
+Batch_Hash["批量提交哈希<br/>batch_commit_hash"]
+Verification_Result["验证结果<br/>verification_result"]
+Idea_ID["想法ID<br/>idea_id"]
+Image_URLs["图片URL<br/>image_urls"]
+End
 Frontend --> API
 Commands --> API
 API --> DBLayer
@@ -191,10 +232,21 @@ API --> ConfigHealth
 API --> Probes
 DBLayer --> Storage
 Storage --> SQLiteDB
+Storage --> Verification_Migration
+Storage --> Lifecycle_Migration
 InstanceMgr --> InstanceRegistry
 ConfigHealth --> ConfigFile
 HealthKernel --> Storage
 Probes --> ConfigFile
+FeaturePipeline --> GoalSpecs
+FeaturePipeline --> VerifyTemplate
+FeaturePipeline --> VerifyParser
+FeaturePipeline --> Retry_Count
+FeaturePipeline --> Batch_Hash
+FeaturePipeline --> Verification_Result
+FeaturePipeline --> Idea_ID
+FeaturePipeline --> Image_URLs
+FeaturePipeline --> End_Time_Stamp
 SQLiteDB --> Schema
 ```
 
@@ -203,6 +255,8 @@ SQLiteDB --> Schema
 - [vivify/dashboard/db.py:9-137](file://vivify/dashboard/db.py#L9-L137)
 - [vivify/storage/sqlite_provider.py:56-200](file://vivify/storage/sqlite_provider.py#L56-L200)
 - [vivify/storage/migrations/0001_init.sql:1-100](file://vivify/storage/migrations/0001_init.sql#L1-L100)
+- [vivify/storage/migrations/0002_add_verification_method.sql:1-7](file://vivify/storage/migrations/0002_add_verification_method.sql#L1-L7)
+- [vivify/storage/migrations/0003_enhance_feature_model.sql:1-19](file://vivify/storage/migrations/0003_enhance_feature_model.sql#L1-L19)
 - [vivify/kernel/health_monitor.py:92-141](file://vivify/kernel/health_monitor.py#L92-L141)
 - [vivify/probes/builtin/site_health.yml:1-52](file://vivify/probes/builtin/site_health.yml#L1-L52)
 
@@ -362,7 +416,7 @@ MainContent --> ActionTrend
 - [vivify/dashboard/static/app.js:464-533](file://vivify/dashboard/static/app.js#L464-L533)
 
 ### 数据模型与存储
-系统使用 SQLite 作为数据存储后端，支持复杂的数据查询和分析：
+系统使用 SQLite 作为数据存储后端，支持复杂的数据查询和分析。**更新**：新增 verification_method 列支持特征验证方法定义。**更新**：新增生命周期跟踪字段支持，包括 image_urls、idea_id、retry_count、batch_commit_hash、verification_result 及时间戳字段。
 
 ```mermaid
 erDiagram
@@ -380,6 +434,16 @@ text commit_hash
 text pr_url
 text feasibility
 text summary
+text verification_method
+text image_urls
+integer idea_id
+integer retry_count
+text batch_commit_hash
+text verification_result
+text evaluated_at
+text started_at
+text verified_at
+text completed_at
 text created_at
 text updated_at
 }
@@ -432,8 +496,10 @@ FEATURE_REQUESTS ||--o{ KNOWLEDGE_ENTRIES : "关联"
 ```
 
 **图表来源**
-- [vivify/storage/migrations/0001_init.sql:9-99](file://vivify/storage/migrations/0001_init.sql#L9-L99)
-- [vivify/models/feature.py:70-87](file://vivify/models/feature.py#L70-L87)
+- [vivify/storage/migrations/0001_init.sql:9-27](file://vivify/storage/migrations/0001_init.sql#L9-L27)
+- [vivify/storage/migrations/0002_add_verification_method.sql:4](file://vivify/storage/migrations/0002_add_verification_method.sql#L4)
+- [vivify/storage/migrations/0003_enhance_feature_model.sql:5-13](file://vivify/storage/migrations/0003_enhance_feature_model.sql#L5-L13)
+- [vivify/models/feature.py:70-101](file://vivify/models/feature.py#L70-L101)
 - [vivify/models/snapshot.py:9-48](file://vivify/models/snapshot.py#L9-L48)
 
 **章节来源**
@@ -443,7 +509,9 @@ FEATURE_REQUESTS ||--o{ KNOWLEDGE_ENTRIES : "关联"
 - [vivify/dashboard/static/style.css:1-397](file://vivify/dashboard/static/style.css#L1-L397)
 - [vivify/dashboard/static/app.js:1-539](file://vivify/dashboard/static/app.js#L1-L539)
 - [vivify/storage/migrations/0001_init.sql:1-100](file://vivify/storage/migrations/0001_init.sql#L1-L100)
-- [vivify/models/feature.py:1-87](file://vivify/models/feature.py#L1-L87)
+- [vivify/storage/migrations/0002_add_verification_method.sql:1-7](file://vivify/storage/migrations/0002_add_verification_method.sql#L1-L7)
+- [vivify/storage/migrations/0003_enhance_feature_model.sql:1-19](file://vivify/storage/migrations/0003_enhance_feature_model.sql#L1-L19)
+- [vivify/models/feature.py:1-101](file://vivify/models/feature.py#L1-L101)
 - [vivify/models/snapshot.py:1-48](file://vivify/models/snapshot.py#L1-L48)
 
 ## 配置健康监控系统
@@ -684,6 +752,171 @@ Goals --> DeployURL
 - [vivify/dashboard/static/app.js:291-539](file://vivify/dashboard/static/app.js#L291-L539)
 - [vivify/dashboard/static/index.html:18-25](file://vivify/dashboard/static/index.html#L18-L25)
 
+## 数据库迁移与存储更新
+
+### 数据库迁移架构
+系统采用版本化的数据库迁移策略，确保数据库结构的演进和向后兼容性。**更新**：新增 verification_method 列支持特征验证方法定义。**更新**：新增 migration 0003 生命周期跟踪字段支持，包括 image_urls、idea_id、retry_count、batch_commit_hash、verification_result 及时间戳字段的数据库支持和向后兼容性设计。
+
+```mermaid
+flowchart TD
+Migration1["0001_init.sql<br/>初始数据库结构"] --> Migration2["0002_add_verification_method.sql<br/>新增verification_method列"]
+Migration2 --> Migration3["0003_enhance_feature_model.sql<br/>新增生命周期跟踪字段"]
+Migration3 --> SchemaMigrations["_schema_migrations<br/>版本跟踪表"]
+Migration1 --> FeatureRequests["feature_requests<br/>基础表结构"]
+Migration2 --> FeatureRequests
+Migration3 --> FeatureRequests
+FeatureRequests --> VerificationMethod["verification_method<br/>TEXT列，可为空"]
+FeatureRequests --> ImageUrls["image_urls<br/>JSON数组URL，可为空"]
+FeatureRequests --> IdeaId["idea_id<br/>INTEGER，可为空"]
+FeatureRequests --> RetryCount["retry_count<br/>INTEGER NOT NULL DEFAULT 0"]
+FeatureRequests --> BatchCommitHash["batch_commit_hash<br/>TEXT，可为空"]
+FeatureRequests --> VerificationResult["verification_result<br/>JSON字符串，可为空"]
+FeatureRequests --> EvaluatedAt["evaluated_at<br/>TEXT时间戳，可为空"]
+FeatureRequests --> StartedAt["started_at<br/>TEXT时间戳，可为空"]
+FeatureRequests --> VerifiedAt["verified_at<br/>TEXT时间戳，可为空"]
+FeatureRequests --> CompletedAt["completed_at<br/>TEXT时间戳，可为空"]
+SchemaMigrations --> VersionTracking["版本号跟踪"]
+VersionTracking --> MigrationStatus["迁移状态记录"]
+```
+
+**图表来源**
+- [vivify/storage/migrations/0001_init.sql:1-100](file://vivify/storage/migrations/0001_init.sql#L1-L100)
+- [vivify/storage/migrations/0002_add_verification_method.sql:1-7](file://vivify/storage/migrations/0002_add_verification_method.sql#L1-L7)
+- [vivify/storage/migrations/0003_enhance_feature_model.sql:1-19](file://vivify/storage/migrations/0003_enhance_feature_model.sql#L1-L19)
+
+### 向后兼容性设计
+数据库提供者实现了向后兼容的处理逻辑，确保新旧版本的数据库都能正常工作：
+
+```mermaid
+sequenceDiagram
+participant App as "应用程序"
+participant Provider as "SqliteStorageProvider"
+participant DB as "SQLite 数据库"
+App->>Provider : _row_to_feature(row)
+Provider->>DB : 查询 feature_requests
+DB-->>Provider : 返回行数据
+Provider->>Provider : 尝试读取新增字段
+alt 字段存在
+Provider->>Provider : 正常读取值
+else 字段不存在
+Provider->>Provider : 捕获异常并设置为 None 或默认值
+end
+Provider-->>App : 返回 FeatureRequest 对象
+```
+
+**图表来源**
+- [vivify/storage/sqlite_provider.py:193-242](file://vivify/storage/sqlite_provider.py#L193-L242)
+
+### 生命周期跟踪字段集成
+**更新**：migration 0003 为特征生命周期跟踪提供结构化支持，包括重试次数、批量提交、验证结果和时间戳字段。
+
+```mermaid
+flowchart TD
+GoalDecomposer["Goal Decomposer<br/>解析GOALS.md"] --> FeatureSpec["FeatureSpec<br/>创建特征规范"]
+FeatureSpec --> VerificationMethod["verification_method<br/>验证方法定义"]
+VerificationMethod --> FeaturePipeline["Feature Pipeline<br/>特征流水线"]
+FeaturePipeline --> EvaluateStage["Evaluate Stage<br/>特征评估"]
+FeaturePipeline --> RefineVM["Refine Verification Method<br/>优化验证方法"]
+RefineVM --> UpdateDB["Update Database<br/>保存验证方法"]
+UpdateDB --> DevelopStage["Develop Stage<br/>特征开发"]
+DevelopStage --> DeployStage["Deploy Stage<br/>特征部署"]
+DeployStage --> VerifyStage["Verify Stage<br/>特征验证"]
+VerifyStage --> VerifyTemplate["Verify Template<br/>feature_verify.md.j2"]
+VerifyTemplate --> AgentHeal["Agent Heal<br/>执行验证"]
+AgentHeal --> ParseResult["Parse Result<br/>parse_verification_result"]
+ParseResult --> UpdateFields["Update Fields<br/>verification_result + 时间戳"]
+UpdateFields --> UpdateDB2["Update Database<br/>保存验证结果"]
+UpdateDB2 --> TrackRetry["Track Retry Count<br/>retry_count++"]
+TrackRetry --> UpdateDB3["Update Database<br/>保存重试计数"]
+UpdateDB3 --> FinalizeFeature["Finalize Feature<br/>completed_at + 状态更新"]
+```
+
+**图表来源**
+- [vivify/goals/decomposer.py:58-77](file://vivify/goals/decomposer.py#L58-L77)
+- [vivify/kernel/feature_pipeline.py:320-403](file://vivify/kernel/feature_pipeline.py#L320-L403)
+- [vivify/agents/prompts/templates/feature_verify.md.j2:1-53](file://vivify/agents/prompts/templates/feature_verify.md.j2#L1-L53)
+- [vivify/agents/prompts/parsers.py:96-131](file://vivify/agents/prompts/parsers.py#L96-L131)
+
+### 数据模型更新
+**更新**：FeatureRequest 和 FeatureSpec 模型都包含了新的生命周期跟踪字段，支持可选的验证方法定义和完整的生命周期管理。
+
+```mermaid
+classDiagram
+class FeatureSpec {
++title : str
++description : str
++type : FeatureType
++parent_goal : Optional[str]
++parent_id : Optional[int]
++priority : Optional[FeaturePriority]
++verification_method : Optional[str]
++idea_id : Optional[int]
+}
+class FeatureRequest {
++title : str
++description : str
++type : FeatureType
++parent_goal : Optional[str]
++parent_id : Optional[int]
++priority : Optional[FeaturePriority]
++verification_method : Optional[str]
++id : int
++status : FeatureStatus
++development_result : str
++commit_hash : Optional[str]
++pr_url : Optional[str]
++feasibility : str
++summary : str
++image_urls : Optional[str] // JSON array of URLs
++idea_id : Optional[int]
++retry_count : int = 0
++batch_commit_hash : Optional[str]
++verification_result : Optional[str] // JSON string
++evaluated_at : Optional[str] // ISO format timestamp
++started_at : Optional[str]
++verified_at : Optional[str]
++completed_at : Optional[str]
++created_at : datetime
++updated_at : datetime
+}
+FeatureSpec --> FeatureRequest : "转换为"
+```
+
+**图表来源**
+- [vivify/models/feature.py:60-101](file://vivify/models/feature.py#L60-L101)
+
+### 验证结果解析与存储
+**更新**：新增的 verification_result 字段用于存储验证过程的详细结果，包括验证状态、指标对比、问题列表等。
+
+```mermaid
+sequenceDiagram
+participant Agent as "验证代理"
+participant Parser as "验证结果解析器"
+participant Storage as "存储提供者"
+Agent->>Parser : parse_verification_result(output)
+Parser->>Parser : 解析JSON结果
+Parser-->>Agent : {verified, summary, issues}
+Agent->>Storage : update_feature(verification_result, 时间戳)
+Storage->>Storage : 保存JSON格式验证结果
+Storage->>Storage : 更新状态为 verified/deployed_with_issues
+Storage-->>Agent : 更新完成
+```
+
+**图表来源**
+- [vivify/agents/prompts/parsers.py:96-131](file://vivify/agents/prompts/parsers.py#L96-L131)
+- [vivify/storage/sqlite_provider.py:364-370](file://vivify/storage/sqlite_provider.py#L364-L370)
+
+**章节来源**
+- [vivify/storage/migrations/0001_init.sql:1-100](file://vivify/storage/migrations/0001_init.sql#L1-L100)
+- [vivify/storage/migrations/0002_add_verification_method.sql:1-7](file://vivify/storage/migrations/0002_add_verification_method.sql#L1-L7)
+- [vivify/storage/migrations/0003_enhance_feature_model.sql:1-19](file://vivify/storage/migrations/0003_enhance_feature_model.sql#L1-L19)
+- [vivify/storage/sqlite_provider.py:193-242](file://vivify/storage/sqlite_provider.py#L193-L242)
+- [vivify/models/feature.py:60-101](file://vivify/models/feature.py#L60-L101)
+- [vivify/goals/decomposer.py:58-77](file://vivify/goals/decomposer.py#L58-L77)
+- [vivify/kernel/feature_pipeline.py:320-403](file://vivify/kernel/feature_pipeline.py#L320-L403)
+- [vivify/agents/prompts/templates/feature_verify.md.j2:1-53](file://vivify/agents/prompts/templates/feature_verify.md.j2#L1-L53)
+- [vivify/agents/prompts/parsers.py:96-131](file://vivify/agents/prompts/parsers.py#L96-L131)
+
 ## 依赖关系分析
 
 ### 外部依赖
@@ -739,10 +972,22 @@ LogStreamer["dashboard/log_streamer.py"]
 ConfigLoader["config/loader.py"]
 HealthMonitor["kernel/health_monitor.py<br/>KPI健康监控"]
 Probes["probes/builtin/site_health.yml<br/>站点健康探针"]
+FeaturePipeline["kernel/feature_pipeline.py<br/>特征验证方法集成 + 生命周期跟踪"]
+GoalDecomposer["goals/decomposer.py<br/>特征分解器"]
+VerifyTemplate["agents/prompts/templates/feature_verify.md.j2<br/>验证模板"]
+VerifyParser["agents/prompts/parsers.py<br/>验证结果解析"]
+End_Time_Stamp["kernel/code_hash.py<br/>时间戳处理"]
+Retry_Count["kernel/failure_tracker.py<br/>重试计数管理"]
+Batch_Hash["kernel/dispatch.py<br/>批量提交处理"]
+Verification_Result["kernel/feature_pipeline.py<br/>验证结果存储"]
+Idea_ID["goals/decomposer.py<br/>想法ID管理"]
+Image_URLs["agents/qodercli_agent.py<br/>图片URL处理"]
 end
 subgraph "存储层"
 SQLiteProvider["storage/sqlite_provider.py"]
 SchemaSQL["storage/migrations/0001_init.sql"]
+VerificationMigration["storage/migrations/0002_add_verification_method.sql<br/>verification_method列"]
+LifecycleMigration["storage/migrations/0003_enhance_feature_model.sql<br/>生命周期跟踪字段"]
 end
 subgraph "模型层"
 FeatureModel["models/feature.py"]
@@ -756,10 +1001,23 @@ DashboardApp --> LogStreamer
 DashboardApp --> ConfigLoader
 DashboardApp --> HealthMonitor
 DashboardApp --> Probes
+DashboardApp --> FeaturePipeline
 DashboardDB --> SQLiteProvider
 SQLiteProvider --> SchemaSQL
+SQLiteProvider --> VerificationMigration
+SQLiteProvider --> LifecycleMigration
 FeatureModel --> SQLiteProvider
 SnapshotModel --> SQLiteProvider
+GoalDecomposer --> FeatureModel
+FeaturePipeline --> FeatureModel
+FeaturePipeline --> VerifyTemplate
+FeaturePipeline --> VerifyParser
+FeaturePipeline --> Retry_Count
+FeaturePipeline --> Batch_Hash
+FeaturePipeline --> Verification_Result
+FeaturePipeline --> Idea_ID
+FeaturePipeline --> Image_URLs
+FeaturePipeline --> End_Time_Stamp
 ```
 
 **图表来源**
@@ -772,6 +1030,10 @@ SnapshotModel --> SQLiteProvider
 - [vivify/config/loader.py:1-78](file://vivify/config/loader.py#L1-L78)
 - [vivify/kernel/health_monitor.py:1-141](file://vivify/kernel/health_monitor.py#L1-L141)
 - [vivify/probes/builtin/site_health.yml:1-52](file://vivify/probes/builtin/site_health.yml#L1-L52)
+- [vivify/goals/decomposer.py:58-77](file://vivify/goals/decomposer.py#L58-L77)
+- [vivify/kernel/feature_pipeline.py:175-338](file://vivify/kernel/feature_pipeline.py#L175-L338)
+- [vivify/agents/prompts/templates/feature_verify.md.j2:1-53](file://vivify/agents/prompts/templates/feature_verify.md.j2#L1-L53)
+- [vivify/agents/prompts/parsers.py:96-131](file://vivify/agents/prompts/parsers.py#L96-L131)
 
 **章节来源**
 - [pyproject.toml:1-70](file://pyproject.toml#L1-L70)
@@ -796,6 +1058,9 @@ SnapshotModel --> SQLiteProvider
 - **增量数据加载**：实例列表每30秒刷新，配置健康检查每30秒刷新一次
 - **配置健康检查优化**：仅检查必要的配置文件和环境变量，避免昂贵的系统调用
 - **前端渲染优化**：配置健康卡片采用虚拟滚动和懒加载，提升大检查列表的渲染性能
+- **向后兼容性优化**：verification_method 和新增字段的可选设计避免了额外的数据库开销
+- **生命周期跟踪优化**：新增字段采用可空设计，不影响现有数据的存储和查询性能
+- **索引优化**：为新增的 idea_id 和 batch_commit_hash 字段建立索引，提升查询性能
 
 ## 故障排除指南
 
@@ -846,15 +1111,44 @@ SnapshotModel --> SQLiteProvider
    - 确认 API 响应格式正确
    - 检查网络连接和跨域设置
 
+9. **特征验证方法问题**
+   - 检查 verification_method 列是否存在
+   - 验证特征分解器是否正确生成验证方法
+   - 确认验证模板是否正确渲染
+   - 检查特征流水线中的验证方法更新逻辑
+
+10. **生命周期跟踪字段问题**
+    - 检查新增字段是否存在于数据库中
+    - 验证字段的可空约束和默认值设置
+    - 确认存储提供者中的向后兼容性处理逻辑
+    - 检查验证结果的 JSON 格式存储和解析
+    - 验证时间戳字段的 ISO 格式转换
+
+11. **数据库迁移问题**
+    - 确认 _schema_migrations 表中的版本号
+    - 检查新增字段的可空约束和默认值
+    - 验证向后兼容性处理逻辑
+    - 确认数据库连接字符串正确
+    - 检查索引创建语句是否正确执行
+
+12. **重试计数和批量提交问题**
+    - 检查 retry_count 字段的递增逻辑
+    - 验证 batch_commit_hash 的唯一性和索引
+    - 确认重试限制配置的正确性
+    - 检查批量处理的事务一致性
+
 **章节来源**
 - [vivify/dashboard/app.py:111-140](file://vivify/dashboard/app.py#L111-L140)
 - [vivify/dashboard/db.py:12-24](file://vivify/dashboard/db.py#L12-L24)
 - [vivify/dashboard/log_streamer.py:9-25](file://vivify/dashboard/log_streamer.py#L9-L25)
 - [vivify/dashboard/static/app.js:291-355](file://vivify/dashboard/static/app.js#L291-L355)
 - [vivify/dashboard/static/app.js:464-533](file://vivify/dashboard/static/app.js#L464-L533)
+- [vivify/storage/migrations/0002_add_verification_method.sql:1-7](file://vivify/storage/migrations/0002_add_verification_method.sql#L1-L7)
+- [vivify/storage/migrations/0003_enhance_feature_model.sql:1-19](file://vivify/storage/migrations/0003_enhance_feature_model.sql#L1-L19)
+- [vivify/storage/sqlite_provider.py:193-242](file://vivify/storage/sqlite_provider.py#L193-L242)
 
 ## 结论
-Web 仪表板系统为 Vivify 自愈引擎提供了直观、实时的可视化界面。**重大更新**：系统现已支持配置健康监控系统，提供项目配置完整性检查、实时健康状态监控和智能修复建议，大幅增强了系统的实用性和维护性。通过清晰的分层架构、完善的 API 设计、优化的性能考虑和全面的健康监控功能，系统能够有效地展示项目状态、历史记录、特性进展、KPI 趋势和配置健康状况。
+Web 仪表板系统为 Vivify 自愈引擎提供了直观、实时的可视化界面。**重大更新**：系统现已支持配置健康监控系统，提供项目配置完整性检查、实时健康状态监控和智能修复建议，大幅增强了系统的实用性和维护性。**数据库迁移更新**：新增 verification_method 列支持特征验证方法定义，为特征验证流程提供结构化支持。**数据库迁移架构更新**：新增 migration 0003 生命周期跟踪字段支持，包括 image_urls、idea_id、retry_count、batch_commit_hash、verification_result 及时间戳字段的数据库支持和向后兼容性设计。
 
 配置健康监控系统包括：
 - **全面的配置检查**：自动检测 .vivify.yml、项目配置、AI 引擎、认证、部署、目标、探针和数据库等关键配置
@@ -870,4 +1164,18 @@ Web 仪表板系统为 Vivify 自愈引擎提供了直观、实时的可视化�
 - **实例配置读取**：显示项目配置、目标列表、部署信息等
 - **实例详情面板**：提供详细的实例信息和快速链接
 
-前端界面采用现代化的设计理念，提供了良好的用户体验。整体而言，这是一个设计合理、功能完备的监控和管理平台，现已具备强大的多实例支持能力和全面的配置健康监控能力，能够满足复杂开发环境下的监控需求。
+特征验证系统更新：
+- **结构化验证方法**：verification_method 列支持定义可执行的验证步骤
+- **特征分解集成**：验证方法在特征分解阶段自动生成
+- **验证流程优化**：支持验证方法的细化和更新
+- **模板渲染支持**：验证模板根据特征的验证方法动态生成
+
+生命周期跟踪系统更新：
+- **完整的生命周期管理**：支持从评估到完成的完整特征生命周期跟踪
+- **重试机制支持**：retry_count 字段支持自动重试和失败处理
+- **批量处理支持**：batch_commit_hash 字段支持批量特征的统一管理
+- **验证结果存储**：verification_result 字段存储详细的验证过程和结果
+- **时间戳跟踪**：多个时间戳字段跟踪特征生命周期中的关键节点
+- **向后兼容性**：所有新增字段都支持可空设计，不影响现有数据
+
+前端界面采用现代化的设计理念，提供了良好的用户体验。整体而言，这是一个设计合理、功能完备的监控和管理平台，现已具备强大的多实例支持能力和全面的配置健康监控能力，以及增强的特征验证和生命周期跟踪功能，能够满足复杂开发环境下的监控需求。

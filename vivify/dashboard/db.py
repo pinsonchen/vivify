@@ -118,6 +118,34 @@ class DashboardDB:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_feature_stats(self) -> dict:
+        """查询特性统计信息：按类型、优先级分布，retry 数量和总数。"""
+        type_rows = self.conn.execute(
+            "SELECT COALESCE(type,'unknown') as t, COUNT(*) as cnt FROM feature_requests GROUP BY type"
+        ).fetchall()
+        by_type = {r["t"]: r["cnt"] for r in type_rows}
+
+        priority_rows = self.conn.execute(
+            "SELECT COALESCE(priority,'unknown') as p, COUNT(*) as cnt"
+            " FROM feature_requests GROUP BY priority"
+        ).fetchall()
+        by_priority = {r["p"]: r["cnt"] for r in priority_rows}
+
+        retried_count = self.conn.execute(
+            "SELECT COUNT(*) as cnt FROM feature_requests WHERE retry_count > 0"
+        ).fetchone()["cnt"]
+
+        total = self.conn.execute(
+            "SELECT COUNT(*) as cnt FROM feature_requests"
+        ).fetchone()["cnt"]
+
+        return {
+            "total": total,
+            "by_type": by_type,
+            "by_priority": by_priority,
+            "retried_count": retried_count,
+        }
+
     def get_knowledge(
         self, category: Optional[str] = None, pattern: Optional[str] = None, limit: int = 50
     ) -> list[dict]:

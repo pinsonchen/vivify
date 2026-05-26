@@ -116,6 +116,8 @@
 
         <!-- 特性 Tab -->
         <section id="tab-features" class="tab-content">
+            <!-- 特性统计卡片行 -->
+            <div class="stats-grid" id="feature-stats-grid"></div>
             <div class="kanban">
                 <div class="kanban-col" data-status="pending">
                     <h4>待处理</h4>
@@ -148,5 +150,14 @@
     </main>
 
     <script src="/static/app.js"></script>
+
+    <!-- 特性详情侧边栏 -->
+    <div id="feature-sidebar" class="sidebar hidden">
+        <div class="sidebar-header">
+            <h3 id="sidebar-title"></h3>
+            <button class="sidebar-close">&times;</button>
+        </div>
+        <div class="sidebar-body" id="sidebar-body"></div>
+    </div>
 </body>
 </html>
