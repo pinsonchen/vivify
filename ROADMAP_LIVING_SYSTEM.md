@@ -396,7 +396,66 @@ class SkillCapsule:
 
 ---
 
-## 实施优先级
+## 工程化补强——生长因子的基础营养
+
+> 生长因子再强大，如果细胞缺乏基本的氨基酸和维生素，级联反应也无法启动。以下是当前系统中已识别但尚未实现的基础能力缺口——它们是上述生物学机制落地的前提。
+
+### A. Idea 模型——从信号到意图的缺失层
+
+**现状**：`FeatureRequest` 上有 `idea_id` 字段（models/feature.py:91），数据库有对应列（migration 0003），但 **Idea 模型本身完全缺失**——无 `class Idea`、无 `ideas` 表、无分解逻辑。
+
+**问题**：`goal_decompose` 直接产出 FeatureRequest，跳过了"概念提炼"阶段。相当于生长因子跳过了受体结合直接进入细胞核——信号传导缺少中间层，导致：
+- 重复提议相似特性（无法识别"这两个 FR 属于同一个 Idea"）
+- 无法做 Idea 级别的可行性评估和优先级排序
+
+**目标**：引入 Idea 生命周期（`proposed → approved → decomposed → completed`），作为 Goal 和 FeatureRequest 之间的中间层。FeatureRequest 通过 `idea_id` 关联回 Idea，支持 Idea 级别的进度追踪和去重。
+
+---
+
+### B. 目标分解的感知盲区
+
+**现状**：
+- `goal_decompose.md.j2` 接受 `kpi_status` 参数，但生产环境传入 `recent_snapshots=[]`（loop.py:1104）——KPI 状态形同虚设
+- `deployed_features` 完全未接入——分解器看不到已部署的特性列表，导致重复提议
+
+**问题**：目标分解器是"瞎子"——它不知道系统当前处于什么状态、之前做过什么。如同免疫系统的 B 细胞不检查抗体库就生产新抗体——大量重复浪费。
+
+**目标**：
+1. 在 `decomposer.py` 中实际采集 KPI 快照并传入分解 prompt
+2. 在 `builders.build_goal_decompose()` 中注入 `deployed_features`（近 30 天已部署/已验证特性列表）
+3. 为派生特性（`parent_id is not None`）实现自动审批规则，跳过重复评估
+
+---
+
+### C. 数据驱动的验证基础设施
+
+**现状**：`feature_verify.md.j2` 有"结果导向验证"section（含 `metrics_before`/`metrics_after` 字段），解析器也支持提取这些字段。但 **无真实指标采集机制**——验证依赖 LLM 主观判断而非实际度量。
+
+**问题**：这相当于免疫系统通过"感觉还行"来判断病原体是否被消灭，而不是通过抗体滴度检测。无量化标准，验证结论不可靠。
+
+**目标**：建立 `_collect_metrics()` 机制（类似 channels-monitor 的实现），在部署前后自动采集关键指标（测试覆盖率、构建时间、lint 警告数等），用量化阈值（如 `quality_score_delta >= 0.5`）驱动验证判定，将 LLM 判断作为补充而非唯一依据。
+
+---
+
+### D. Workspace 健康检查——修复前的"术前检查"
+
+**现状**：`fix_issue.md.j2` 无任何工作区健康检查。Pipeline 代码中有 `_has_actual_changes()` 硬门禁（feature_pipeline.py:1042），但仅在事后检查。
+
+**问题**：Agent 在脏工作区中工作（未提交变更、活跃的 rebase、worktree 冲突），导致操作失败后需要昂贵的 heal 循环——相当于在感染的伤口上做手术。
+
+**目标**：在 `fix_issue.md.j2` 和 `feature_develop.md.j2` 的执行起点注入工作区健康检查（uncommitted changes、rebase 状态、worktree 锁），失败时提前终止而非事后修复。在 pipeline 层面也增加 pre-flight check，在调用 Agent 前验证 worktree 状态。
+
+---
+
+### E. 环境感知增强（auto_discover）
+
+**现状**：`configurator.py` 的 `auto_discover()` 仅覆盖 5-7 个字段（project.name、description、deploy.url、test_command、build_command），覆盖率 <50%。
+
+**问题**：init 时用户需要手动填充大量配置，增加了生长因子"注入"阶段的摩擦。
+
+**目标**：扩展自动发现能力——从 Dockerfile/.github/workflows 推断 deploy_method，从 CI 配置提取 lint/typecheck 命令，从 README 提取 health_endpoint，将覆盖率提升至 70%+，降低注入阶段的人工介入。
+
+---
 
 按 ROI（投入产出比）排序：
 
@@ -404,12 +463,17 @@ class SkillCapsule:
 |--------|------|----------|--------|
 | P0 | 技能胶囊系统 | 修复成功 → 提炼 → 复用，fast-path 自动生长 | 中 |
 | P0 | API 令牌桶硬限 + p53 机制 | 防止失控循环和过度增殖 | 小 |
+| P0 | 目标分解感知补全 (§B) | KPI 注入 + deployed_features 去重，消除重复提议 | 小 |
+| P0 | Workspace 健康检查 (§D) | 消除 70%+ heal 失败，术前检查代替术后修复 | 小 |
 | P1 | 知识遗忘/GC（自噬） | 防止知识图谱膨胀降低 Agent 效果 | 小 |
 | P1 | L2 Episodic Memory | 显著提升修复命中率 | 中 |
 | P1 | 表观遗传层（epigenome.json） | 让系统因环境而异、因经历而特化 | 中 |
+| P1 | 数据驱动验证 (§C) | 量化指标替代 LLM 主观判断，验证可信度提升 | 中 |
+| P1 | Idea 模型 (§A) | Goal → Idea → FR 三层结构，支撑去重和进度追踪 | 中 |
 | P2 | 多模态奖励信号 | 形成正向反馈循环 | 中 |
 | P2 | Worktree 物理隔离（血脑屏障） | 补全安全底座 | 小 |
 | P2 | 能力外化机制 | 让 Vivify 的知识转化为项目原生能力 | 中 |
+| P2 | 环境感知增强 (§E) | auto_discover 覆盖率 50% → 70%+，降低注入摩擦 | 中 |
 | P3 | 动态 Agent 工厂 | 长期价值，需较大架构调整 | 大 |
 | P3 | 算力弹性调配 | 资源利用率优化 | 中 |
 | P3 | 跨项目表观遗传 | 多项目部署时的经验传递 | 大 |
