@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import shutil
 import subprocess
 import sys
 from importlib.resources import files
@@ -18,6 +20,13 @@ from vivify.intelligence import (
 from vivify.intelligence.ai_analyzer import AIAnalyzer
 from vivify.intelligence.classifier import ProjectProfile
 from vivify.intelligence.goals_templates import render_goals
+from vivify.intelligence.wiki_generator import (
+    DEFAULT_WIKI_DIR,
+    WikiContext,
+    generate_wiki,
+    parse_wiki_metadata,
+)
+from vivify.knowledge.builder import KnowledgeBuilder
 
 
 def register(sub: argparse._SubParsersAction) -> None:
@@ -40,6 +49,12 @@ def register(sub: argparse._SubParsersAction) -> None:
         help="Override detected project scenario type.",
     )
     p.add_argument("--qodercli-path", default="qodercli", help="qodercli 可执行文件路径")
+    p.add_argument(
+        "--template",
+        choices=["quick", "full"],
+        default="full",
+        help="配置模板: quick(精简30行) / full(完整95行)",
+    )
     p.set_defaults(func=run)
 
 
@@ -105,6 +120,65 @@ def _scenario_from_value(value: str) -> ScenarioType:
     return ScenarioType.GENERIC
 
 
+def detect_harness_commands(project_root: Path) -> dict[str, str]:
+    """Auto-detect project test/lint/typecheck/build commands by stack.
+
+    Inspection is best-effort: failures simply omit the affected command.
+    Returns a possibly-empty dict with any of the keys ``test``, ``lint``,
+    ``typecheck``, ``build``.
+    """
+    commands: dict[str, str] = {}
+
+    def _has_tool(name: str) -> bool:
+        return shutil.which(name) is not None
+
+    # Python project
+    if (project_root / "pyproject.toml").exists() or (project_root / "setup.py").exists():
+        commands["test"] = "python -m pytest --tb=short -q"
+        if _has_tool("ruff"):
+            commands["lint"] = "ruff check ."
+        elif _has_tool("flake8"):
+            commands["lint"] = "flake8 ."
+        if _has_tool("mypy"):
+            commands["typecheck"] = "mypy ."
+        return commands
+
+    # Node.js project
+    if (project_root / "package.json").exists():
+        try:
+            pkg = json.loads((project_root / "package.json").read_text(encoding="utf-8"))
+            scripts = pkg.get("scripts", {}) or {}
+            if "test" in scripts:
+                commands["test"] = "npm test"
+            if "lint" in scripts:
+                commands["lint"] = "npm run lint"
+            if "build" in scripts:
+                commands["build"] = "npm run build"
+            if _has_tool("tsc") or (project_root / "tsconfig.json").exists():
+                commands["typecheck"] = "npx tsc --noEmit"
+        except (json.JSONDecodeError, OSError):
+            pass
+        return commands
+
+    # Go project
+    if (project_root / "go.mod").exists():
+        commands["test"] = "go test ./..."
+        if _has_tool("golangci-lint"):
+            commands["lint"] = "golangci-lint run"
+        commands["build"] = "go build ./..."
+        return commands
+
+    # Rust project
+    if (project_root / "Cargo.toml").exists():
+        commands["test"] = "cargo test"
+        if _has_tool("clippy-driver") or _has_tool("cargo-clippy"):
+            commands["lint"] = "cargo clippy"
+        commands["build"] = "cargo build"
+        return commands
+
+    return commands
+
+
 def _build_ai_goals(goals_markdown: str, owner: str) -> str:
     """包装 AI 生成的 GOALS 内容为完整文件。"""
     owner_clean = owner.lstrip("@") or "team"
@@ -125,6 +199,167 @@ FeatureRequests on a schedule. Each goal must declare at least one KPI.
     return header + "\n" + goals_markdown
 
 
+def _build_quick_yaml(
+    profile,
+    config_values: dict[str, str],
+    default_branch: str,
+    harness_commands: dict[str, str] | None = None,
+    github_token: str = "",
+    wiki_path: str = "",
+) -> str:
+    """生成精简配置（约30行），仅包含必需字段 + 注释引导."""
+    name = config_values.get("project.name", "")
+    scenario = profile.primary_scenario.value
+    language = profile.language
+    hc = harness_commands or {}
+
+    lines = [
+        "# ============================================",
+        "# vivify 快速启动配置 (Quick Start)",
+        "# 完整配置: vivify init --template full",
+        "# 配置文档: https://github.com/pinsonchen/vivify/docs/config.md",
+        "# ============================================",
+        "",
+        "version: 1",
+        "mode: daemon",
+        "interval_seconds: 300",
+        "",
+        "project:",
+        f'  name: "{name}"',
+        f'  type: "{scenario}"',
+        f'  language: "{language}"',
+    ]
+
+    # wiki_path
+    if wiki_path:
+        lines.append(f'  wiki_path: "{wiki_path}"')
+
+    lines.extend([
+        "",
+        "pr:",
+        f"  base_branch: {default_branch}",
+        "",
+        "agent:",
+        "  type: qodercli",
+        "  qodercli:",
+        "    model: ultimate",
+    ])
+
+    # GitHub token (if provided)
+    if github_token:
+        lines.extend([
+            "",
+            "github:",
+            "  enabled: true",
+            f'  token: "{github_token}"',
+        ])
+
+    # Harness (only if commands detected)
+    if hc:
+        lines.extend(["", "harness:", "  enabled: true"])
+        if hc.get("test"):
+            lines.append(f'  test_command: "{hc["test"]}"')
+        if hc.get("lint"):
+            lines.append(f'  lint_command: "{hc["lint"]}"')
+        if hc.get("typecheck"):
+            lines.append(f'  typecheck_command: "{hc["typecheck"]}"')
+        if hc.get("build"):
+            lines.append(f'  build_command: "{hc["build"]}"')
+
+    lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def _build_advanced_yaml(
+    profile,
+    probes: list[str],
+    fixers: list[str],
+    harness_commands: dict[str, str] | None = None,
+) -> str:
+    """生成高级配置文件，供 quick 模板用户按需调优."""
+    scenario = profile.primary_scenario.value
+    _ = harness_commands or {}  # 预留：后续如需可根据实际命令往 advanced 写入调优参数
+
+    lines = [
+        "# ============================================",
+        "# vivify 高级配置 (Advanced Configuration)",
+        "# 本文件可选，用于覆盖默认的高级参数",
+        "# 删除本文件不影响基础功能",
+        "# ============================================",
+        "",
+        "# ── AI Agent 调优 (QoderCli Tuning) ──",
+        "agent:",
+        "  qodercli:",
+    ]
+
+    # 使用场景预设
+    from vivify.config.presets import get_preset
+    preset = get_preset(scenario)
+    for key, value in preset.items():
+        lines.append(f"    {key}: {value}")
+
+    lines.extend([
+        '    extra_args: ["--yolo", "-q"]',
+        "    max_concurrent_processes: 10",
+        "    permission_mode: bypass_permissions",
+        "",
+        "# ── 检测探针 (Probes) ──",
+        "probes:",
+        "  enabled:",
+    ])
+    for p in probes:
+        lines.append(f"    - {p}")
+
+    lines.extend([
+        "",
+        "# ── 修复器 (Fixers) ──",
+        "fixers:",
+        "  enabled:",
+    ])
+    for f in fixers:
+        lines.append(f"    - {f}")
+
+    # Harness 高级参数
+    lines.extend([
+        "",
+        "# ── Harness 高级参数 ──",
+        "harness:",
+        "  run_tests_after_fix: true",
+        "  run_lint_after_fix: true",
+        "  max_feedback_retries: 2",
+        "  feedback_timeout_seconds: 120",
+        '  guides_dir: ".vivify/guides"',
+        "  inject_guides_to_prompt: true",
+        "  doom_loop_window: 10",
+        "  doom_loop_threshold: 3",
+        "  risk_scoring_enabled: true",
+        "  high_risk_requires_tests: true",
+    ])
+
+    # Intelligence
+    lines.extend([
+        "",
+        "# ── 智能分析 (Intelligence) ──",
+        "intelligence:",
+        "  rca_enabled: true",
+        "  rca_recurrence_threshold: 3",
+        "  trend_enabled: true",
+        "  trend_interval_rounds: 10",
+    ])
+
+    # Escalation
+    lines.extend([
+        "",
+        "# ── 升级策略 (Escalation) ──",
+        "escalation:",
+        "  max_same_issue_rounds: 3",
+        "  upgrade_threshold: 3",
+    ])
+
+    lines.append("")
+    return "\n".join(lines) + "\n"
+
+
 def _build_yaml(
     profile,
     config_values: dict[str, str],
@@ -132,6 +367,8 @@ def _build_yaml(
     fixers: list[str],
     default_branch: str,
     github_token: str = "",
+    wiki_path: str = "",
+    harness_commands: dict[str, str] | None = None,
 ) -> str:
     """生成 .vivify.yml 内容（纯字符串拼接）。"""
     name = config_values.get("project.name", "")
@@ -151,6 +388,7 @@ def _build_yaml(
         "state_dir: .vivify",
         "log_dir: .vivify/logs",
         "",
+        "# ── 项目基础信息 (Project Info) ──",
         "project:",
         f'  name: "{name}"',
         f'  description: "{description}"',
@@ -163,12 +401,15 @@ def _build_yaml(
         f'  test_command: "{test_command}"',
         f'  build_command: "{build_command}"',
         '  dev_command: ""',
+        f'  wiki_path: "{wiki_path}"',
         "",
+        "# ── PR 创建策略 (Pull Request) ──",
         "pr:",
         f"  base_branch: {default_branch}",
         "  label: vivify",
         "  auto_merge: false",
         "",
+        "# ── 检测探针 (Probes - 自动选择) ──",
         "probes:",
         "  enabled:",
     ]
@@ -176,6 +417,7 @@ def _build_yaml(
         lines.append(f"    - {p}")
 
     lines.append("")
+    lines.append("# ── 修复器 (Fixers - 自动选择) ──")
     lines.append("fixers:")
     lines.append("  enabled:")
     for f in fixers:
@@ -183,23 +425,25 @@ def _build_yaml(
 
     # -- agent 配置 --（无论 qodercli 是否可用都生成，方便后续安装）
     lines.append("")
+    lines.append("# ── AI Agent 配置 (通常无需修改) ──")
     lines.append("agent:")
     lines.append("  type: qodercli")
     lines.append("  qodercli:")
     lines.append("    binary_path: qodercli")
     lines.append("    model: ultimate")
-    lines.append("    max_turns_fix: 30")
-    lines.append("    max_turns_develop: 100")
-    lines.append("    max_turns_evaluate: 20")
-    lines.append("    max_turns_verify: 20")
-    lines.append("    max_turns_decompose: 30")
-    lines.append("    timeout_fix_seconds: 1800")
-    lines.append("    timeout_develop_seconds: 3600")
-    lines.append("    extra_args: [\"--yolo\", \"-q\"]")
-    lines.append("    max_concurrent_processes: 10")
+    lines.append("    max_turns_fix: 30  # [高级]")
+    lines.append("    max_turns_develop: 100  # [高级]")
+    lines.append("    max_turns_evaluate: 20  # [高级]")
+    lines.append("    max_turns_verify: 20  # [高级]")
+    lines.append("    max_turns_decompose: 30  # [高级]")
+    lines.append("    timeout_fix_seconds: 1800  # [高级]")
+    lines.append("    timeout_develop_seconds: 3600  # [高级]")
+    lines.append("    extra_args: [\"--yolo\", \"-q\"]  # [高级]")
+    lines.append("    max_concurrent_processes: 10  # [高级]")
 
     # -- github 配置（实例级）--
     lines.append("")
+    lines.append("# ── GitHub 认证 ──")
     lines.append("github:")
     lines.append("  enabled: true")
     lines.append('  token_env: "GH_TOKEN"')
@@ -208,6 +452,27 @@ def _build_yaml(
     else:
         lines.append('  token: ""  # 可填入实例级 token，优先级高于环境变量')
     lines.append("  mirror_issues: true")
+
+    # -- harness 配置 --
+    hc = harness_commands or {}
+    lines.append("")
+    lines.append("# ── 验证传感器 (Harness - 自动检测) ──")
+    lines.append("harness:")
+    lines.append("  enabled: true")
+    lines.append(f'  test_command: "{hc.get("test", "")}"')
+    lines.append(f'  lint_command: "{hc.get("lint", "")}"')
+    lines.append(f'  typecheck_command: "{hc.get("typecheck", "")}"')
+    lines.append(f'  build_command: "{hc.get("build", "")}"')
+    lines.append("  run_tests_after_fix: true")
+    lines.append("  run_lint_after_fix: true")
+    lines.append("  max_feedback_retries: 2")
+    lines.append("  feedback_timeout_seconds: 120")
+    lines.append('  guides_dir: ".vivify/guides"')
+    lines.append("  inject_guides_to_prompt: true")
+    lines.append("  doom_loop_window: 10")
+    lines.append("  doom_loop_threshold: 3")
+    lines.append("  risk_scoring_enabled: true")
+    lines.append("  high_risk_requires_tests: true")
 
     lines.append("")
     return "\n".join(lines) + "\n"
@@ -230,6 +495,30 @@ def _save_env_token(token: str) -> None:
 
     env_file.write_text("\n".join(new_lines) + "\n")
     env_file.chmod(0o600)  # 仅 owner 可读写
+
+
+def _get_gh_token_from_cli() -> str | None:
+    """从 gh auth 中直接提取可用 token（零交互）。"""
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "token"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def _load_env_token() -> str:
+    """从 ~/.vivify/env 加载已保存的 GH_TOKEN。"""
+    env_file = Path.home() / ".vivify" / "env"
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            if line.startswith("GH_TOKEN="):
+                return line.split("=", 1)[1].strip()
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +555,52 @@ def run(args: argparse.Namespace) -> int:
         print("  或指定路径: vivify init --qodercli-path /path/to/qodercli")
         sys.exit(1)
 
+    # ── Step 2.5: 生成项目 Wiki（可选，失败不阻塞）──
+    print("\n📖 Step 2.5: 生成项目 Wiki（qodercli wiki）…")
+    wiki_context: WikiContext | None = None
+    wiki_path_for_yaml = ""
+    existing_meta = repo / DEFAULT_WIKI_DIR / "meta" / "repowiki-metadata.json"
+    if existing_meta.is_file() and not args.force:
+        print(f"  检测到已有 wiki ({DEFAULT_WIKI_DIR})，跳过生成（使用 --force 重新生成）")
+        wiki_context = parse_wiki_metadata(repo)
+    else:
+        print("  正在调用 qodercli wiki（预计 30-60s）…")
+        ok, info = generate_wiki(
+            repo,
+            qodercli_path=args.qodercli_path,
+            language="zh",
+            timeout_seconds=120,
+        )
+        if ok:
+            print("  Wiki:        生成成功 ✓")
+            wiki_context = parse_wiki_metadata(repo)
+        else:
+            print(f"  Wiki:        生成失败（{info}），跳过。后续可手动运行 `qodercli wiki --repo .`")
+
+    if wiki_context is not None and not wiki_context.is_empty():
+        wiki_path_for_yaml = wiki_context.wiki_path or DEFAULT_WIKI_DIR
+        print(
+            f"  Wiki 上下文: 源文件 {wiki_context.source_file_count} 个，"
+            f"代码片段 {wiki_context.snippet_count} 个，"
+            f"文档章节 {wiki_context.catalog_count} 个"
+        )
+
+    # ── Step 2.6: 构建项目知识图谱（可选，失败不阻塞）──
+    print("\n🧠 Step 2.6: 构建项目知识图谱…")
+    try:
+        kg_builder = KnowledgeBuilder(
+            project_root=repo,
+            qodercli_binary=args.qodercli_path,
+            wiki_path=wiki_path_for_yaml,
+            timeout=120,
+        )
+        kg_graph = kg_builder.build_full()
+        kg_node_count = len(kg_graph.nodes) if kg_graph else 0
+        kg_edge_count = len(kg_graph.edges) if kg_graph else 0
+        print(f"  知识图谱:    {kg_node_count} 节点, {kg_edge_count} 边 ✓")
+    except Exception as e:
+        print(f"  知识图谱:    构建失败（非阻塞）: {e}")
+
     # === GitHub 认证配置 ===
     print("\n📌 Step 1.5: 检查 GitHub 认证...")
     gh_token = os.environ.get("GH_TOKEN", "")
@@ -273,24 +608,27 @@ def run(args: argparse.Namespace) -> int:
     gh_authenticated = False
 
     if gh_token:
-        print("  GH_TOKEN:    已配置 ✓")
+        print("  GH_TOKEN:    已配置 (环境变量) ✓")
         gh_authenticated = True
     else:
-        # 检查 gh auth 状态
-        try:
-            result = subprocess.run(
-                ["gh", "auth", "status"],
-                capture_output=True, text=True, timeout=10
-            )
-            if result.returncode == 0:
-                print("  gh auth:     已认证 ✓")
+        # 先检查 ~/.vivify/env
+        saved_token = _load_env_token()
+        if saved_token:
+            gh_token = saved_token
+            print("  GH_TOKEN:    已配置 (~/.vivify/env) ✓")
+            gh_authenticated = True
+        else:
+            # 尝试从 gh auth 直接提取 token（零交互）
+            cli_token = _get_gh_token_from_cli()
+            if cli_token:
+                gh_token = cli_token
+                instance_gh_token = cli_token
+                _save_env_token(cli_token)  # 缓存到 ~/.vivify/env
+                print("  GH_TOKEN:    已从 gh auth 自动提取 ✓")
                 gh_authenticated = True
             else:
                 print("  GH_TOKEN:    未配置")
-                print("  gh auth:     未认证")
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            print("  GH_TOKEN:    未配置")
-            print("  gh CLI:      未安装")
+                print("  gh CLI:      未认证")
 
     if not gh_authenticated:
         print()
@@ -319,12 +657,12 @@ def run(args: argparse.Namespace) -> int:
 
     # AI 分析
     print("\n  正在使用 AI 分析项目...")
-    ai_result = analyzer.analyze(repo, signals)
+    ai_result = analyzer.analyze(repo, signals, wiki_context=wiki_context)
 
     if not ai_result:
         # 重试一次
         print("  AI 分析首次未成功，正在重试...")
-        ai_result = analyzer.analyze(repo, signals)
+        ai_result = analyzer.analyze(repo, signals, wiki_context=wiki_context)
 
     if ai_result:
         # AI 成功 - 构造 profile
@@ -430,12 +768,44 @@ def run(args: argparse.Namespace) -> int:
 
     # ── Step 9: 生成 .vivify.yml ──
     default_branch = signals.default_branch or "main"
-    yaml_content = _build_yaml(
-        profile, config_values, probes, fixers, default_branch,
-        github_token=instance_gh_token,
-    )
+    # Auto-detect harness commands (best-effort)
+    try:
+        harness_commands = detect_harness_commands(repo)
+        if harness_commands:
+            print("\n✨ Harness 环境检测:")
+            for k, v in harness_commands.items():
+                print(f"    {k:10s} = {v}")
+    except Exception as e:
+        print(f"  Harness 检测失败 (非阻塞): {e}")
+        harness_commands = {}
+    if getattr(args, "template", "full") == "quick":
+        yaml_content = _build_quick_yaml(
+            profile, config_values, default_branch,
+            harness_commands=harness_commands,
+            github_token=instance_gh_token,
+            wiki_path=wiki_path_for_yaml,
+        )
+    else:
+        yaml_content = _build_yaml(
+            profile, config_values, probes, fixers, default_branch,
+            github_token=instance_gh_token,
+            wiki_path=wiki_path_for_yaml,
+            harness_commands=harness_commands,
+        )
     cfg_dest.parent.mkdir(parents=True, exist_ok=True)
     cfg_dest.write_text(yaml_content, encoding="utf-8")
+
+    # quick 模板：额外生成 .vivify-advanced.yml（可选调优文件）
+    if getattr(args, "template", "full") == "quick":
+        advanced_dest = repo / ".vivify-advanced.yml"
+        if advanced_dest.exists() and not args.force:
+            print(f"  {advanced_dest.name} 已存在，跳过（使用 --force 覆盖）")
+        else:
+            advanced_content = _build_advanced_yaml(
+                profile, probes, fixers, harness_commands=harness_commands
+            )
+            advanced_dest.write_text(advanced_content, encoding="utf-8")
+            print(f"  {advanced_dest.name} 生成 ✓ （可选调优，删除不影响基础功能）")
 
     # ── Step 10: 生成 GOALS.md ──
     goals_dest = repo / "GOALS.md"
@@ -452,6 +822,22 @@ def run(args: argparse.Namespace) -> int:
     # ── Step 11: 创建目录和文件 ──
     _copy_template("pr_template.md.tmpl", repo / ".vivify" / "pr_template.md", force=args.force)
     _write_user_dir_readmes(repo)
+
+    # ── Step 11.5: 生成默认 harness guides ──
+    try:
+        from vivify.harness.guides import GuidesManager
+        guides_dir = repo / ".vivify" / "guides"
+        if not guides_dir.exists() or args.force:
+            GuidesManager(guides_dir).generate_default_guides({
+                "language": profile.language,
+                "test_framework": (harness_commands or {}).get("test", ""),
+                "conventions": "",
+            })
+            print(f"  Harness guides: {guides_dir} ✓")
+        else:
+            print(f"  Harness guides: {guides_dir} 已存在，跳过")
+    except Exception as e:
+        print(f"  Harness guides: 生成失败（非阻塞）: {e}")
 
     # ── Step 12: 更新 .gitignore ──
     _patch_gitignore(repo)

@@ -23,6 +23,7 @@ class ProbeRunReport:
 
     probe_id: str
     issues: list[Issue] = field(default_factory=list)
+    raw_data: dict = field(default_factory=dict)  # probe.collect() 原始输出
     duration_seconds: float = 0.0
     error: str | None = None  # filled when the probe raised
     skipped_reason: str | None = None
@@ -59,6 +60,7 @@ def run_probes(
                 reports.append(report)
                 continue
             raw = probe.collect(ctx)
+            report.raw_data = raw or {}
             issues = probe.analyze(raw or {}, ctx) or []
             report.issues.extend(issues)
         except Exception as e:

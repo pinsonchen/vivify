@@ -5,7 +5,7 @@ sensible default so a freshly-initialised repo can run with an empty config.
 """
 from __future__ import annotations
 
-from typing import List, Literal
+from typing import Dict, List, Literal
 
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -42,12 +42,43 @@ class QoderCliConfig(BaseModel):
     max_concurrent_processes: int = 10
     slot_wait_timeout_seconds: int = 300
     auto_trust_workspace: bool = True
+    permission_mode: str = "bypass_permissions"  # default/accept_edits/bypass_permissions/dont_ask/plan/auto
     # Remote (cloud) execution
     use_remote: bool = False
     remote_poll_interval: int = 15
     remote_timeout: int = 900
     max_concurrent_remote: int = 3
     plan_agent_for_decompose: bool = True
+    # 推理努力级别（按任务类别）
+    reasoning_effort_by_category: Dict[str, str] = Field(
+        default_factory=lambda: {
+            "fix_issue": "high",
+            "develop_feature": "medium",
+            "evaluate_feature": "medium",
+            "verify_feature": "high",
+            "goal_decompose": "medium",
+        }
+    )
+    # 系统提示追加内容（非空时追加到 qodercli 的 system prompt）
+    system_prompt_suffix: str = ""
+    # 最大输出 token（按任务类别）
+    max_output_tokens_by_category: Dict[str, int] = Field(
+        default_factory=lambda: {
+            "fix_issue": 16000,
+            "develop_feature": 32000,
+            "evaluate_feature": 8000,
+            "verify_feature": 8000,
+            "goal_decompose": 8000,
+        }
+    )
+    # Agent 选择（按任务类别，未配置的类别不传 --agent）
+    agent_for_category: Dict[str, str] = Field(
+        default_factory=lambda: {
+            "goal_decompose": "Plan",
+        }
+    )
+    # 附件最大数量（--attachment 参数）
+    max_attachments: int = 3
 
 
 class AgentConfig(BaseModel):
@@ -118,6 +149,19 @@ class GoalsConfig(BaseModel):
     max_features_per_decompose: int = 3
 
 
+class AgentCostModel(BaseModel):
+    """按优先级分配 Agent 资源 (max_turns / timeout)."""
+
+    p0_max_turns: int = 100
+    p0_timeout: int = 7200    # 2 小时
+    p1_max_turns: int = 60
+    p1_timeout: int = 3600    # 1 小时
+    p2_max_turns: int = 30
+    p2_timeout: int = 1800    # 30 分钟
+    p3_max_turns: int = 15
+    p3_timeout: int = 900     # 15 分钟
+
+
 class FeaturePipelineConfig(BaseModel):
     """Lifecycle thresholds for the feature pipeline.
 
@@ -131,6 +175,9 @@ class FeaturePipelineConfig(BaseModel):
     developing_timeout_minutes: int = 90
     verifying_timeout_minutes: int = 60
     max_retries: int = 3
+    max_verify_retries: int = 2        # 验证失败最大重试次数
+    auto_revert_enabled: bool = True   # 是否启用自动 revert
+    cost_model: AgentCostModel = Field(default_factory=AgentCostModel)
 
 
 class EscalationConfig(BaseModel):
@@ -196,6 +243,43 @@ class DeployConfig(BaseModel):
     verify_after_deploy: bool = True          # 是否部署后验证
 
 
+class IntelligenceConfig(BaseModel):
+    """智能分析配置 (RCA 与趋势分析)."""
+
+    rca_enabled: bool = True
+    rca_recurrence_threshold: int = 3      # 重复 N 次触发 RCA
+    rca_max_per_round: int = 2             # 每轮最多 2 个 RCA 分析
+    trend_enabled: bool = True
+    trend_interval_rounds: int = 10        # 每 10 轮执行一次趋势分析
+    trend_window_days: int = 7             # 分析窗口 7 天
+    knowledge_history_injection: bool = True  # 注入历史经验到修复 prompt
+
+
+class HarnessConfig(BaseModel):
+    """Project harness configuration for PEV loop."""
+
+    enabled: bool = True
+    # Verification sensors
+    test_command: str = ""
+    lint_command: str = ""
+    typecheck_command: str = ""
+    build_command: str = ""
+    # Feedback control
+    run_tests_after_fix: bool = True
+    run_lint_after_fix: bool = True
+    max_feedback_retries: int = 2
+    feedback_timeout_seconds: int = 120
+    # Feedforward guides
+    guides_dir: str = ".vivify/guides"
+    inject_guides_to_prompt: bool = True
+    # Doom-loop detection
+    doom_loop_window: int = 10
+    doom_loop_threshold: int = 3
+    # Risk scoring
+    risk_scoring_enabled: bool = True
+    high_risk_requires_tests: bool = True
+
+
 class ProjectConfig(BaseModel):
     """项目元数据配置，由 vivify init 智能分析自动填充。"""
 
@@ -210,6 +294,7 @@ class ProjectConfig(BaseModel):
     test_command: str = ""         # 测试命令 (如 pytest, npm test)
     build_command: str = ""        # 构建命令 (如 npm run build)
     dev_command: str = ""          # 开发服务命令 (如 npm run dev)
+    wiki_path: str = ""            # qodercli wiki 输出目录，供 feature pipeline 引用项目架构上下文
 
 
 # ────────────────────────────────────────────────────────────────────────────────
@@ -241,10 +326,14 @@ class VivifyConfig(BaseModel):
     daemon: DaemonConfig = Field(default_factory=DaemonConfig)
     deploy: "DeployConfig" = Field(default_factory=DeployConfig)
     project: ProjectConfig = Field(default_factory=ProjectConfig)
+    intelligence: IntelligenceConfig = Field(default_factory=IntelligenceConfig)
+    harness: HarnessConfig = Field(default_factory=HarnessConfig)
+    rules: List[dict] = Field(default_factory=list)  # 复合信号规则配置
 
 
 __all__ = [
     "AgentConfig",
+    "AgentCostModel",
     "DeployConfig",
     "VivifyConfig",
     "DaemonConfig",
@@ -253,6 +342,8 @@ __all__ = [
     "FixersConfig",
     "GitHubConfig",
     "GoalsConfig",
+    "HarnessConfig",
+    "IntelligenceConfig",
     "KpiMonitorConfig",
     "PrConfig",
     "ProbesConfig",

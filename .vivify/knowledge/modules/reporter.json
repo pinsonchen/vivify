@@ -1,0 +1,27 @@
+{
+  "name": "reporter",
+  "path": "vivify/reporter",
+  "summary": "GitHub认证系统增强",
+  "responsibility": "github-authentication-enhancement",
+  "layer": "data",
+  "exports": [
+    "GithubIssueReporter",
+    "LoggerReporter",
+    "StorageReporter",
+    "setup_logging"
+  ],
+  "dependencies": [
+    "module:vivify/interfaces",
+    "module:vivify/models"
+  ],
+  "files": [
+    "__init__.py",
+    "github_issue_reporter.py",
+    "logger.py",
+    "storage_reporter.py",
+    "__init__.py",
+    "github_issue_reporter.py",
+    "logger.py",
+    "storage_reporter.py"
+  ]
+}

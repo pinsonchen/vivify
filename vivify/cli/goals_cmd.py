@@ -131,6 +131,7 @@ def run_decompose(args: argparse.Namespace) -> int:
         extra_args=tuple(qc.extra_args),
         max_turns_default=qc.max_turns_decompose,
         timeout_seconds_default=qc.timeout_decompose_seconds,
+        wiki_path=getattr(cfg.project, "wiki_path", "") or "",
     ))
     decomposer = AgentGoalDecomposer(
         agent=agent, repo_root=Path.cwd(),

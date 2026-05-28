@@ -12,6 +12,7 @@ from typing import Optional
 
 from .scanner import ProjectSignals
 from .classifier import ScenarioType
+from .wiki_generator import WikiContext
 
 
 # 匹配 fenced JSON 块或裸 JSON 对象
@@ -62,12 +63,18 @@ class AIAnalyzer:
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
             return False, str(e)
 
-    def analyze(self, repo_root: Path, signals: ProjectSignals) -> Optional[AIAnalysisResult]:
+    def analyze(
+        self,
+        repo_root: Path,
+        signals: ProjectSignals,
+        wiki_context: Optional[WikiContext] = None,
+    ) -> Optional[AIAnalysisResult]:
         """
         调用 qodercli 分析项目，返回结构化结果。
         失败时返回 None（调用方应 fallback 到规则引擎）。
+        可选传入 ``wiki_context`` 将项目 Wiki 架构信息附加到提示词中。
         """
-        prompt = self._build_prompt(signals)
+        prompt = self._build_prompt(signals, wiki_context=wiki_context)
         binary = shutil.which(self.binary_path) or self.binary_path
 
         cmd = [
@@ -93,7 +100,11 @@ class AIAnalyzer:
             pass
         return None
 
-    def _build_prompt(self, signals: ProjectSignals) -> str:
+    def _build_prompt(
+        self,
+        signals: ProjectSignals,
+        wiki_context: Optional[WikiContext] = None,
+    ) -> str:
         """构造分析提示词，要求 AI 以 JSON 格式返回项目分析结果。"""
         # 项目文件列表（最多 50 个）
         files_sample = signals.files[:50]
@@ -145,6 +156,11 @@ class AIAnalyzer:
         # 有效场景类型
         valid_scenarios = [s.value for s in ScenarioType]
 
+        # Wiki 上下文（可选）
+        wiki_block = ""
+        if wiki_context is not None and not wiki_context.is_empty():
+            wiki_block = "\n\n" + wiki_context.to_prompt_block() + "\n"
+
         prompt = f"""你是一个项目分析专家。请分析以下项目信息，并以 JSON 格式返回分析结果。
 
 ## 项目信息
@@ -168,7 +184,7 @@ class AIAnalyzer:
 
 **README 内容摘要**:
 {readme_excerpt}
-
+{wiki_block}
 ## 要求
 
 请分析此项目并返回以下 JSON 格式（必须用 ```json ``` 代码块包裹）：

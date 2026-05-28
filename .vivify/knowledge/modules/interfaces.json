@@ -1,0 +1,42 @@
+{
+  "name": "interfaces",
+  "path": "vivify/interfaces",
+  "summary": "Interfaces module",
+  "responsibility": "",
+  "layer": "core",
+  "exports": [
+    "CodingAgent",
+    "FixContext",
+    "Fixer",
+    "GoalDecomposer",
+    "Probe",
+    "ProbeContext",
+    "RepoState",
+    "Reporter",
+    "StorageProvider",
+    "Verifier",
+    "VerifyResult"
+  ],
+  "dependencies": [
+    "module:vivify/config",
+    "module:vivify/models"
+  ],
+  "files": [
+    "__init__.py",
+    "agent.py",
+    "fixer.py",
+    "goal_decomposer.py",
+    "probe.py",
+    "reporter.py",
+    "storage.py",
+    "verifier.py",
+    "__init__.py",
+    "agent.py",
+    "fixer.py",
+    "goal_decomposer.py",
+    "probe.py",
+    "reporter.py",
+    "storage.py",
+    "verifier.py"
+  ]
+}

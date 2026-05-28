@@ -89,6 +89,12 @@ def _build_agent(cfg) -> QoderCliAgent:
         remote_timeout=qc.remote_timeout,
         max_concurrent_remote=qc.max_concurrent_remote,
         plan_agent_for_decompose=qc.plan_agent_for_decompose,
+        wiki_path=getattr(cfg.project, "wiki_path", "") or "",
+        guides_dir=getattr(cfg.harness, "guides_dir", "") or "",
+        inject_guides_to_prompt=bool(
+            getattr(cfg.harness, "enabled", False)
+            and getattr(cfg.harness, "inject_guides_to_prompt", False)
+        ),
     )
     return QoderCliAgent(bin_cfg)
 
@@ -157,6 +163,10 @@ def run(args: argparse.Namespace) -> int:
         deploy_url=cfg.project.deploy_url,
         goals=cfg.goals,
         default_branch=cfg.pr.base_branch,
+        qodercli_binary=cfg.agent.qodercli.binary_path,
+        wiki_path=getattr(cfg.project, "wiki_path", "") or "",
+        intelligence=cfg.intelligence,
+        harness=cfg.harness,
     )
 
     deps = KernelDeps(

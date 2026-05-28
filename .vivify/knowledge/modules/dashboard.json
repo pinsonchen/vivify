@@ -1,0 +1,28 @@
+{
+  "name": "dashboard",
+  "path": "vivify/dashboard",
+  "summary": "Web仪表板系统",
+  "responsibility": "web-dashboard-system",
+  "layer": "core",
+  "exports": [
+    "create_app",
+    "NoCacheStaticMiddleware",
+    "DashboardDB",
+    "log_manual_action",
+    "update_feature_status",
+    "tail_log"
+  ],
+  "dependencies": [],
+  "files": [
+    "__init__.py",
+    "app.py",
+    "db.py",
+    "log_streamer.py",
+    "app.js",
+    "__init__.py",
+    "app.py",
+    "db.py",
+    "log_streamer.py",
+    "app.js"
+  ]
+}

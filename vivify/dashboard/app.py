@@ -13,8 +13,9 @@ import yaml
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.types import ASGIApp, Receive, Scope, Send
 
-from .db import DashboardDB
+from .db import DashboardDB, log_manual_action, update_feature_status
 from .log_streamer import tail_log
 
 # 全局实例注册表路径
@@ -332,9 +333,37 @@ def _validate_instance_path(repo_path: str) -> Path:
     return p
 
 
+class NoCacheStaticMiddleware:
+    """开发阶段禁用静态文件缓存，防止浏览器展示旧版本。
+
+    使用原生 ASGI 接口确保对 mounted sub-apps (StaticFiles) 也生效。
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or not scope["path"].startswith("/static/"):
+            await self.app(scope, receive, send)
+            return
+
+        # 拦截 response headers，注入 no-cache
+        async def send_with_no_cache(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                headers.append((b"cache-control", b"no-cache, no-store, must-revalidate"))
+                headers.append((b"pragma", b"no-cache"))
+                headers.append((b"expires", b"0"))
+                message["headers"] = headers
+            await send(message)
+
+        await self.app(scope, receive, send_with_no_cache)
+
+
 def create_app(state_dir: Optional[Path] = None) -> FastAPI:
     """创建 Dashboard FastAPI 应用实例。"""
     app = FastAPI(title="Vivify Dashboard", version="0.1.0")
+    app.add_middleware(NoCacheStaticMiddleware)
 
     # 解析状态目录
     if state_dir is None:
@@ -414,6 +443,83 @@ def create_app(state_dir: Optional[Path] = None) -> FastAPI:
         if not db:
             return {"total": 0, "by_type": {}, "by_priority": {}, "retried_count": 0}
         return db.get_feature_stats()
+
+    @app.get("/api/features/recent")
+    async def api_features_recent(limit: int = Query(10, le=50)):
+        """返回最近更新的特性列表。"""
+        db = get_db()
+        if not db:
+            return []
+        return db.get_recent_features(limit=limit)
+
+    @app.get("/api/features/timeline")
+    async def api_features_timeline(days: int = Query(30, ge=1, le=180)):
+        """基于 feature 生命周期时间戳生成按天趋势数据。"""
+        db = get_db()
+        if not db:
+            return []
+        return db.get_features_timeline(days=days)
+
+    @app.get("/api/alerts")
+    async def api_alerts(days: int = Query(7, ge=1, le=30)):
+        """获取告警列表 — 聚合失败的 features 和异常事件。"""
+        db = get_db()
+        if not db:
+            return []
+        return db.get_alerts(days=days)
+
+    @app.post("/api/features/{fid}/retry")
+    async def api_feature_retry(fid: int):
+        """手动重试 — 将 feature 重置为 approved。"""
+        db = get_db()
+        if not db:
+            raise HTTPException(status_code=503, detail="数据库未就绪")
+        feature = db.get_feature(fid)
+        if not feature:
+            raise HTTPException(status_code=404, detail="特性不存在")
+        allowed = ('deployed_with_issues', 'rejected', 'developing', 'evaluating')
+        if feature['status'] not in allowed:
+            raise HTTPException(status_code=400, detail=f"当前状态 {feature['status']} 不允许重试")
+        ok = update_feature_status(db_path, fid, 'approved', retry_increment=True)
+        if not ok:
+            raise HTTPException(status_code=500, detail="更新失败")
+        log_manual_action(db_path, fid, 'retry')
+        return {"ok": True, "new_status": "approved"}
+
+    @app.post("/api/features/{fid}/reject")
+    async def api_feature_reject(fid: int):
+        """手动拒绝 — 标记为 rejected。"""
+        db = get_db()
+        if not db:
+            raise HTTPException(status_code=503, detail="数据库未就绪")
+        feature = db.get_feature(fid)
+        if not feature:
+            raise HTTPException(status_code=404, detail="特性不存在")
+        if feature['status'] == 'rejected':
+            raise HTTPException(status_code=400, detail="已经是 rejected 状态")
+        ok = update_feature_status(db_path, fid, 'rejected')
+        if not ok:
+            raise HTTPException(status_code=500, detail="更新失败")
+        log_manual_action(db_path, fid, 'reject')
+        return {"ok": True, "new_status": "rejected"}
+
+    @app.post("/api/features/{fid}/skip")
+    async def api_feature_skip(fid: int):
+        """跳过当前轮次 — 暂时搁置（标记为 pending）。"""
+        db = get_db()
+        if not db:
+            raise HTTPException(status_code=503, detail="数据库未就绪")
+        feature = db.get_feature(fid)
+        if not feature:
+            raise HTTPException(status_code=404, detail="特性不存在")
+        terminal_states = ('verified', 'deployed', 'rejected')
+        if feature['status'] in terminal_states:
+            raise HTTPException(status_code=400, detail=f"当前状态 {feature['status']} 不允许跳过")
+        ok = update_feature_status(db_path, fid, 'pending')
+        if not ok:
+            raise HTTPException(status_code=500, detail="更新失败")
+        log_manual_action(db_path, fid, 'skip')
+        return {"ok": True, "new_status": "pending"}
 
     @app.get("/api/features/{fid}")
     async def api_feature_detail(fid: int):
@@ -686,6 +792,25 @@ def create_app(state_dir: Optional[Path] = None) -> FastAPI:
 
         try:
             return instance_db.get_kpi_snapshots(since=since, source=source, limit=limit)
+        finally:
+            instance_db.close()
+
+    @app.get("/api/instances/{instance_id}/features/timeline")
+    async def get_instance_features_timeline(
+        instance_id: str,
+        days: int = Query(30, ge=1, le=180),
+    ):
+        """获取指定实例的 feature 趋势数据。"""
+        try:
+            repo_str = _decode_instance_id(instance_id)
+        except Exception:
+            raise HTTPException(status_code=400, detail="无效的 instance_id")
+        repo_path = _validate_instance_path(repo_str)
+        instance_db = _get_instance_db(repo_path)
+        if not instance_db:
+            return []
+        try:
+            return instance_db.get_features_timeline(days=days)
         finally:
             instance_db.close()
 

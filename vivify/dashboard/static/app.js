@@ -47,11 +47,12 @@
 
     function onTabSwitch(tab) {
         switch(tab) {
-            case 'overview': loadConfigHealth(); break;
+            case 'overview': loadConfigHealth(); loadFeatureStats(); loadRecentActivity(); break;
             case 'instances': renderInstancesPanel(); break;
             case 'issues': loadIssues(); break;
             case 'actions': loadActions(); break;
             case 'features': loadFeatures(); break;
+            case 'alerts': loadAlerts(); break;
             case 'trends': loadTrends(); break;
         }
     }
@@ -119,6 +120,10 @@
             document.getElementById('feature-stats').innerHTML =
                 `${developing} 开发中 / ${deployed} 已完成`;
         }
+
+        // 加载概览统计卡片和最近活动
+        loadFeatureStats();
+        loadRecentActivity();
     }
 
     // --- 问题列表 ---
@@ -217,6 +222,7 @@
 
         const byType = stats.by_type || {};
         const byPriority = stats.by_priority || {};
+        const byStatus = stats.by_status || {};
 
         const typeItems = Object.entries(byType)
             .map(([k, v]) => `<span class="badge badge-${k}">${k}: ${v}</span>`).join(' ');
@@ -224,6 +230,17 @@
         const p1 = byPriority['P1'] || 0;
         const p2 = byPriority['P2'] || 0;
         const p3 = byPriority['P3'] || 0;
+
+        // 状态分布（高亮 deployed_with_issues）
+        const total = stats.total || 1;
+        const dwiCount = byStatus['deployed_with_issues'] || 0;
+        const dwiRatio = (dwiCount / total * 100).toFixed(0);
+        const dwiWarning = dwiRatio > 30;
+        const statusItems = Object.entries(byStatus)
+            .map(([k, v]) => {
+                const cls = k === 'deployed_with_issues' && dwiWarning ? 'status-warn-highlight' : '';
+                return `<span class="badge badge-status ${cls}">${k}: ${v}</span>`;
+            }).join(' ');
 
         grid.innerHTML = `
             <div class="stat-card">
@@ -248,17 +265,65 @@
                 <div class="stat-label">超时重试</div>
             </div>
         `;
+
+        // 概览 Tab 的统计卡片
+        const overviewGrid = document.getElementById('overview-stats-grid');
+        if (overviewGrid) {
+            overviewGrid.innerHTML = `
+                <div class="stat-card">
+                    <div class="stat-value">${stats.total || 0}</div>
+                    <div class="stat-label">总特性数</div>
+                </div>
+                <div class="stat-card ${dwiWarning ? 'stat-card-warn' : ''}">
+                    <div style="display:flex;flex-direction:column;gap:4px;align-items:center;font-size:0.78rem">${statusItems || '-'}</div>
+                    ${dwiWarning ? `<div class="stat-warn-text">⚠ deployed_with_issues 占 ${dwiRatio}%</div>` : ''}
+                    <div class="stat-label" style="margin-top:6px">按状态</div>
+                </div>
+                <div class="stat-card">
+                    <div style="font-size:0.85rem;color:var(--text-primary);line-height:1.8">
+                        <span class="badge badge-P0">P0: ${p0}</span>
+                        <span class="badge badge-P1">P1: ${p1}</span>
+                        <span class="badge badge-P2">P2: ${p2}</span>
+                        <span class="badge badge-P3">P3: ${p3}</span>
+                    </div>
+                    <div class="stat-label" style="margin-top:4px">按优先级</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" style="color:var(--warning)">${stats.retried_count || 0}</div>
+                    <div class="stat-label">超时重试</div>
+                </div>
+            `;
+        }
     }
 
     // --- KPI 趋势图 ---
     async function loadTrends() {
         const base = getApiBase();
+        const container = document.getElementById('tab-trends');
+        if (!container) return;
+
         const snapshots = await api(base + '/kpi/snapshots?limit=50');
-        if (!snapshots || !snapshots.length) return;
+
+        if (!snapshots || !snapshots.length) {
+            // 快照为空：尝试加载 feature timeline 作为替代展示
+            const timeline = await api(base + '/features/timeline?days=30');
+            renderTrendsEmptyOrTimeline(container, timeline);
+            return;
+        }
+
+        // 有 KPI 快照 —— 重建默认 canvas 布局（清理之前的 empty-state DOM）
+        ensureTrendsLayout(container);
 
         // KPI 评分趋势
         const labels = snapshots.map(s => formatTime(s.captured_at)).reverse();
-        const scores = snapshots.map(s => s.overall_score || 0).reverse();
+        const scores = snapshots.map(s => {
+            if (typeof s.overall_score === 'number') return s.overall_score;
+            // 兑底：从 metrics_json 中提取 overall_score
+            try {
+                const m = typeof s.metrics_json === 'string' ? JSON.parse(s.metrics_json) : s.metrics_json;
+                return (m && typeof m.overall_score === 'number') ? m.overall_score : 0;
+            } catch (e) { return 0; }
+        }).reverse();
 
         const ctx1 = document.getElementById('kpi-chart').getContext('2d');
         if (kpiChart) kpiChart.destroy();
@@ -285,7 +350,7 @@
         });
 
         // 操作统计趋势
-        const rounds = await api('/api/rounds?limit=20');
+        const rounds = await api(base + '/rounds?limit=20');
         if (rounds && rounds.length) {
             const rLabels = rounds.map(r => formatTime(r.started_at)).reverse();
             const successes = rounds.map(r => r.success_count || 0).reverse();
@@ -314,6 +379,76 @@
         }
     }
 
+    // 恢复趋势 Tab 的默认 canvas 布局
+    function ensureTrendsLayout(container) {
+        if (document.getElementById('kpi-chart') && document.getElementById('actions-chart')) return;
+        if (kpiChart) { try { kpiChart.destroy(); } catch (e) {} kpiChart = null; }
+        if (actionsChart) { try { actionsChart.destroy(); } catch (e) {} actionsChart = null; }
+        container.innerHTML = `
+            <div class="chart-container"><canvas id="kpi-chart"></canvas></div>
+            <div class="chart-container"><canvas id="actions-chart"></canvas></div>
+        `;
+    }
+
+    // 快照为空时的展示：如果有 timeline 数据则画柱状图，否则只展示空状态提示
+    function renderTrendsEmptyOrTimeline(container, timeline) {
+        if (kpiChart) { try { kpiChart.destroy(); } catch (e) {} kpiChart = null; }
+        if (actionsChart) { try { actionsChart.destroy(); } catch (e) {} actionsChart = null; }
+
+        const hasTimeline = Array.isArray(timeline) && timeline.length > 0;
+        const banner = `
+            <div class="trends-empty-banner">
+                <div class="trends-empty-glyph">◔</div>
+                <div class="trends-empty-body">
+                    <h3>还未采集到 KPI 快照</h3>
+                    <p>KPI 数据会在 vivify daemon 运行过程中自动采集。
+                    请确保 daemon 持续运行，数轮后趋势图将自动填充。</p>
+                    ${hasTimeline
+                        ? '<p class="trends-empty-sub">以下展示基于 Feature 生命周期的近期趋势作为参考。</p>'
+                        : '<p class="trends-empty-sub">当前还没有足够的 Feature 数据可供展示。</p>'}
+                </div>
+            </div>`;
+
+        if (!hasTimeline) {
+            container.innerHTML = banner;
+            return;
+        }
+
+        container.innerHTML = banner + `
+            <div class="chart-container">
+                <div class="chart-title">Feature 生命周期趋势（近 30 天）</div>
+                <canvas id="feature-timeline-chart"></canvas>
+            </div>`;
+
+        const labels = timeline.map(d => d.day);
+        const created = timeline.map(d => d.created || 0);
+        const verified = timeline.map(d => d.verified || 0);
+        const rejected = timeline.map(d => d.rejected || 0);
+        const dwi = timeline.map(d => d.deployed_with_issues || 0);
+
+        const ctx = document.getElementById('feature-timeline-chart').getContext('2d');
+        new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels,
+                datasets: [
+                    { label: '新建', data: created, backgroundColor: '#7aa2f7' },
+                    { label: '已验证', data: verified, backgroundColor: '#9ece6a' },
+                    { label: '带问题部署', data: dwi, backgroundColor: '#e0af68' },
+                    { label: '已拒绝', data: rejected, backgroundColor: '#f7768e' },
+                ]
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { labels: { color: '#c0caf5' } } },
+                scales: {
+                    x: { stacked: true, ticks: { color: '#565f89' }, grid: { color: '#3b4261' } },
+                    y: { stacked: true, ticks: { color: '#565f89' }, grid: { color: '#3b4261' }, beginAtZero: true }
+                }
+            }
+        });
+    }
+
     // --- SSE 日志流 ---
     function connectLogStream() {
         if (logEventSource) logEventSource.close();
@@ -340,7 +475,41 @@
         };
     }
 
+    // --- 最近活动 ---
+    async function loadRecentActivity() {
+        const list = document.getElementById('recent-activity-list');
+        if (!list) return;
+        const data = await api('/api/features/recent');
+        if (!data || data.length === 0) {
+            list.innerHTML = '<div style="color:var(--text-muted);font-size:0.85rem;padding:1rem">暂无活动记录</div>';
+            return;
+        }
+        list.innerHTML = data.map(f => {
+            const statusCls = f.status || 'pending';
+            const relTime = formatRelativeTime(f.updated_at);
+            return `
+                <div class="recent-activity-item" onclick="showFeatureDetails(${f.id})">
+                    <span class="badge badge-status badge-status-${statusCls}">${f.status || '-'}</span>
+                    <span class="recent-activity-title">${escHtml(f.title)}</span>
+                    <span class="recent-activity-time">${relTime}</span>
+                </div>`;
+        }).join('');
+    }
+
     // --- 工具函数 ---
+    function formatRelativeTime(isoStr) {
+        if (!isoStr) return '-';
+        const d = new Date(isoStr);
+        if (isNaN(d.getTime())) return isoStr;
+        const now = new Date();
+        const diff = Math.floor((now - d) / 1000);
+        if (diff < 60) return '刚刚';
+        if (diff < 3600) return Math.floor(diff / 60) + '分钟前';
+        if (diff < 86400) return Math.floor(diff / 3600) + '小时前';
+        if (diff < 604800) return Math.floor(diff / 86400) + '天前';
+        return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    }
+
     function formatTime(isoStr) {
         if (!isoStr) return '-';
         const d = new Date(isoStr);
@@ -651,6 +820,25 @@
         if (f.description) {
             html += `<div class="detail-section"><h4>Description</h4><p>${escHtml(f.description)}</p></div>`;
         }
+        // 可行性评估
+        if (f.feasibility) {
+            html += `<div class="detail-section"><h4>Feasibility</h4><div class="feasibility-block"><p>${escHtml(f.feasibility)}</p></div></div>`;
+        }
+        // 关联 Idea ID
+        if (f.idea_id) {
+            html += `<div class="detail-section"><h4>Idea ID</h4><p style="color:var(--accent);font-family:monospace">${escHtml(String(f.idea_id))}</p></div>`;
+        }
+        // 图片缩略图
+        if (f.image_urls) {
+            let urls = f.image_urls;
+            if (typeof urls === 'string') {
+                try { urls = JSON.parse(urls); } catch(e) { urls = null; }
+            }
+            if (Array.isArray(urls) && urls.length > 0) {
+                const imgs = urls.map(u => `<a href="${escHtml(u)}" target="_blank"><img src="${escHtml(u)}" alt="feature image" /></a>`).join('');
+                html += `<div class="detail-section"><h4>Images</h4><div class="image-thumbnails">${imgs}</div></div>`;
+            }
+        }
         if (f.verification_method) {
             html += `<div class="detail-section"><h4>Verification Method</h4><pre>${escHtml(f.verification_method)}</pre></div>`;
         }
@@ -658,9 +846,6 @@
             let vr = f.verification_result;
             if (typeof vr === 'string') { try { vr = JSON.parse(vr); } catch(e) {} }
             html += `<div class="detail-section"><h4>Verification Result</h4><pre>${escHtml(JSON.stringify(vr, null, 2))}</pre></div>`;
-        }
-        if (f.feasibility) {
-            html += `<div class="detail-section"><h4>Feasibility</h4><p>${escHtml(f.feasibility)}</p></div>`;
         }
         if (f.pr_url) {
             html += `<div class="detail-section"><h4>PR</h4><a href="${f.pr_url}" target="_blank">${escHtml(f.pr_url)}</a></div>`;
@@ -671,7 +856,111 @@
         if (f.batch_commit_hash) {
             html += `<div class="detail-section"><h4>Batch Commit</h4><pre>${escHtml(f.batch_commit_hash)}</pre></div>`;
         }
+        // 操作按钮：对非终态的 feature 显示手动干预按钮
+        const actionableStates = ['deployed_with_issues', 'developing', 'approved', 'evaluating', 'pending'];
+        if (actionableStates.includes(f.status)) {
+            html += `<div class="detail-section detail-actions">
+                <h4>手动干预</h4>
+                <div class="detail-actions-btns">
+                    <button onclick="retryFeature(${f.id})" class="btn-action btn-retry">重试</button>
+                    <button onclick="skipFeature(${f.id})" class="btn-action btn-skip">跳过</button>
+                    <button onclick="rejectFeature(${f.id})" class="btn-action btn-reject">拒绝</button>
+                </div>
+            </div>`;
+        }
         return html;
+    }
+
+    // --- 告警中心 ---
+    async function loadAlerts() {
+        const data = await api('/api/alerts?days=7');
+        const container = document.getElementById('alerts-list');
+        if (!container) return;
+        if (!data || data.length === 0) {
+            container.innerHTML = '<div class="alerts-empty"><div class="alerts-empty-icon">✓</div><div>暂无告警，一切正常</div></div>';
+            return;
+        }
+        container.innerHTML = data.map(alert => {
+            if (alert.type === 'feature') {
+                const severityCls = alert.severity === 'high' ? 'alert-severity-high' : 'alert-severity-medium';
+                const retryBadge = alert.retry_count > 0 ? `<span class="badge badge-retry">⟳${alert.retry_count}</span>` : '';
+                return `
+                    <div class="alert-item ${severityCls}">
+                        <div class="alert-item-header">
+                            <span class="alert-severity-badge ${severityCls}">${alert.severity === 'high' ? 'HIGH' : 'MED'}</span>
+                            <span class="alert-item-title">${escHtml(alert.title)}</span>
+                            <span class="alert-item-time">${formatRelativeTime(alert.time)}</span>
+                        </div>
+                        <div class="alert-item-meta">
+                            <span class="badge badge-status badge-status-${alert.status}">${alert.status}</span>
+                            <span class="badge badge-${alert.priority || 'P3'}">${alert.priority || '-'}</span>
+                            <span class="badge badge-${alert.feature_type || 'feature'}">${alert.feature_type || 'feature'}</span>
+                            ${retryBadge}
+                        </div>
+                        <div class="alert-item-actions">
+                            <button class="btn-action btn-retry" onclick="retryFeature(${alert.feature_id})">重试</button>
+                            <button class="btn-action btn-skip" onclick="skipFeature(${alert.feature_id})">跳过</button>
+                            <button class="btn-action btn-reject" onclick="rejectFeature(${alert.feature_id})">拒绝</button>
+                        </div>
+                    </div>`;
+            } else {
+                return `
+                    <div class="alert-item alert-severity-medium">
+                        <div class="alert-item-header">
+                            <span class="alert-severity-badge alert-severity-medium">MED</span>
+                            <span class="alert-item-title">${escHtml(alert.title)}</span>
+                            <span class="alert-item-time">${formatRelativeTime(alert.time)}</span>
+                        </div>
+                        <div class="alert-item-meta">
+                            <span class="badge" style="background:var(--bg-card);color:var(--text-secondary)">${alert.action_type || '-'}</span>
+                            ${alert.category ? `<span class="badge" style="background:var(--bg-card);color:var(--text-muted)">${alert.category}</span>` : ''}
+                        </div>
+                        ${alert.summary ? `<div class="alert-item-summary">${escHtml(alert.summary)}</div>` : ''}
+                    </div>`;
+            }
+        }).join('');
+    }
+
+    async function retryFeature(id) {
+        if (!confirm('确认重试此特性？将重新进入开发流程。')) return;
+        try {
+            const resp = await fetch('/api/features/' + id + '/retry', {method: 'POST'});
+            if (!resp.ok) {
+                const err = await resp.json();
+                alert('操作失败: ' + (err.detail || '未知错误'));
+                return;
+            }
+        } catch(e) { alert('网络错误'); return; }
+        loadAlerts();
+        loadFeatures();
+    }
+
+    async function rejectFeature(id) {
+        if (!confirm('确认拒绝此特性？将不再重试。')) return;
+        try {
+            const resp = await fetch('/api/features/' + id + '/reject', {method: 'POST'});
+            if (!resp.ok) {
+                const err = await resp.json();
+                alert('操作失败: ' + (err.detail || '未知错误'));
+                return;
+            }
+        } catch(e) { alert('网络错误'); return; }
+        loadAlerts();
+        loadFeatures();
+    }
+
+    async function skipFeature(id) {
+        if (!confirm('确认跳过此特性？将暂时搁置。')) return;
+        try {
+            const resp = await fetch('/api/features/' + id + '/skip', {method: 'POST'});
+            if (!resp.ok) {
+                const err = await resp.json();
+                alert('操作失败: ' + (err.detail || '未知错误'));
+                return;
+            }
+        } catch(e) { alert('网络错误'); return; }
+        loadAlerts();
+        loadFeatures();
     }
 
     function escHtml(str) {
@@ -694,5 +983,8 @@
 
     // 暴露 showFeatureDetails 到全局（kanban 卡片 onclick 需要）
     window.showFeatureDetails = showFeatureDetails;
+    window.retryFeature = retryFeature;
+    window.rejectFeature = rejectFeature;
+    window.skipFeature = skipFeature;
 
 })()

@@ -59,11 +59,16 @@ from vivify.pr_mode.pr_creator import PrCreator
 from vivify.pr_mode.quality_check import run_quality_checks
 from vivify.pr_mode.self_grow_guard import classify_worktree
 from vivify.pr_mode.worktree import WorktreeManager
-from vivify.probes.runner import aggregate_issues, run_probes
+from vivify.probes.rule_engine import RuleEngine
+from vivify.probes.runner import ProbeRunReport, aggregate_issues, run_probes
 from vivify.daemon.lock import InstanceLock
 from vivify.daemon.manager import DaemonManager  # 仅用于全局实例注册表
-from vivify.config.schema import DaemonConfig, DeployConfig, GoalsConfig
+from vivify.config.schema import DaemonConfig, DeployConfig, GoalsConfig, HarnessConfig, IntelligenceConfig
 from vivify.deployers import DeployResult, get_deployer
+from vivify.intelligence.rca import RootCauseAnalyzer
+from vivify.intelligence.trend_analyzer import TrendAnalyzer
+from vivify.knowledge.maintainer import KnowledgeMaintainer
+from vivify.verifier.kpi_snapshot import KpiSnapshotVerifier
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +96,11 @@ class KernelConfig:
     deploy_url: str = ""  # 部署地址（用于 deploy 后验证）
     goals: GoalsConfig = field(default_factory=GoalsConfig)
     default_branch: str = "main"  # 用于 goal decompose 时构造 RepoState
+    rules: list = field(default_factory=list)  # 复合信号规则配置
+    qodercli_binary: str = "qodercli"  # qodercli 路径（知识图谱维护用）
+    wiki_path: str = ""  # wiki 路径（知识图谱维护用）
+    intelligence: IntelligenceConfig = field(default_factory=IntelligenceConfig)
+    harness: HarnessConfig = field(default_factory=HarnessConfig)
 
 
 @dataclass
@@ -173,10 +183,61 @@ class Kernel:
         self._last_decompose_time: float = 0.0
         self._goals_file_hash: str = ""
 
+        # ── KPI snapshot verifier：每轮采集 feature/probe 指标，为趋势 Tab 提供数据 ────
+        try:
+            self._kpi_verifier: Optional[KpiSnapshotVerifier] = KpiSnapshotVerifier(
+                probes=self.deps.probes,
+                storage=self.deps.storage,
+                source="kpi_monitor",
+            )
+        except Exception as e:  # pragma: no cover
+            logger.debug("KpiSnapshotVerifier init failed: %s", e)
+            self._kpi_verifier = None
+
         # ── 多实例隔离：获取锁 + 写 PID 文件 ───────────────────────────────
         self._instance_lock: Optional[InstanceLock] = None
         self._pid_file_path: Optional[Path] = None
         self._acquire_instance_lock()
+
+        # ── 知识图谱增量维护器 ─────────────────────────────────────────
+        try:
+            self._knowledge_maintainer: Optional[KnowledgeMaintainer] = KnowledgeMaintainer(
+                project_root=deps.repo_root,
+                qodercli_binary=self.config.qodercli_binary,
+                wiki_path=self.config.wiki_path,
+            )
+        except Exception as e:  # pragma: no cover
+            logger.debug("KnowledgeMaintainer init failed: %s", e)
+            self._knowledge_maintainer = None
+
+        # ── 智能分析（RCA + 趋势） ─────────────────────────────
+        try:
+            self._rca: Optional[RootCauseAnalyzer] = RootCauseAnalyzer(
+                storage=self.deps.storage,
+                rca_threshold=self.config.intelligence.rca_recurrence_threshold,
+            )
+        except Exception as e:  # pragma: no cover
+            logger.debug("RootCauseAnalyzer init failed: %s", e)
+            self._rca = None
+        try:
+            self._trend_analyzer: Optional[TrendAnalyzer] = TrendAnalyzer(
+                storage=self.deps.storage,
+                window_days=self.config.intelligence.trend_window_days,
+            )
+        except Exception as e:  # pragma: no cover
+            logger.debug("TrendAnalyzer init failed: %s", e)
+            self._trend_analyzer = None
+        self._trend_round_counter: int = 0
+        self._latest_health_summary = None
+        # 传递 RCA 上下文到 _try_agent_fix：issue.hash -> formatted prompt context
+        self._rca_contexts: dict[str, str] = {}
+
+        # ── Harness (PEV) 初始化：sensors / doom-loop / risk / guides ───────
+        self._sensor_engine = None
+        self._doom_detector = None
+        self._risk_scorer = None
+        self._guides_manager = None
+        self._init_harness()
 
         # ── 信号处理：SIGTERM / SIGINT 触发优雅停止 ──────────────────────
         self._shutdown_requested = False
@@ -243,6 +304,167 @@ class Kernel:
         logger.info("Received signal %s, requesting graceful shutdown...", signum)
         self._shutdown_requested = True
 
+    # ── Harness (PEV) helpers ─────────────────────────────────────────────────
+    def _init_harness(self) -> None:
+        """Initialise harness components when ``config.harness.enabled``.
+
+        Failures are logged and silently ignored so the kernel still works
+        when the harness sub-package is missing or misconfigured.
+        """
+        harness_cfg = getattr(self.config, "harness", None)
+        if harness_cfg is None or not getattr(harness_cfg, "enabled", False):
+            return
+        try:
+            from vivify.harness.sensors import HarnessSensorEngine
+            from vivify.harness.doom_loop import DoomLoopDetector
+            from vivify.harness.risk_scorer import RiskScorer
+            from vivify.harness.guides import GuidesManager
+        except Exception as e:  # pragma: no cover
+            logger.debug("Harness import failed (disabled): %s", e)
+            return
+        try:
+            self._sensor_engine = HarnessSensorEngine(harness_cfg, self.deps.repo_root)
+            self._doom_detector = DoomLoopDetector(
+                window_size=harness_cfg.doom_loop_window,
+                threshold=harness_cfg.doom_loop_threshold,
+            )
+            self._risk_scorer = RiskScorer(harness_cfg)
+            guides_dir = Path(harness_cfg.guides_dir)
+            if not guides_dir.is_absolute():
+                guides_dir = self.deps.repo_root / guides_dir
+            self._guides_manager = GuidesManager(guides_dir)
+            logger.info("Harness initialised (guides_dir=%s)", guides_dir)
+        except Exception as e:  # pragma: no cover
+            logger.warning("Harness init failed: %s", e)
+            self._sensor_engine = None
+            self._doom_detector = None
+            self._risk_scorer = None
+            self._guides_manager = None
+
+    def _harness_enabled(self) -> bool:
+        return (
+            getattr(self.config, "harness", None) is not None
+            and self.config.harness.enabled
+            and self._sensor_engine is not None
+        )
+
+    def _get_changed_files(self, worktree_path: Path, base_ref: str) -> list[str]:
+        """Return the list of files changed in the worktree relative to ``base_ref``.
+
+        Falls back to an empty list on failure.
+        """
+        try:
+            import subprocess
+            res = subprocess.run(
+                ["git", "diff", "--name-only", base_ref, "HEAD"],
+                cwd=str(worktree_path),
+                capture_output=True, text=True, timeout=15,
+            )
+            if res.returncode != 0:
+                return []
+            return [line.strip() for line in res.stdout.splitlines() if line.strip()]
+        except Exception as e:  # pragma: no cover
+            logger.debug("_get_changed_files failed: %s", e)
+            return []
+
+    def _get_diff_stats(self, worktree_path: Path, base_ref: str) -> dict:
+        """Return diff statistics for risk scoring."""
+        stats: dict = {"lines_added": 0, "lines_deleted": 0, "files_deleted": []}
+        try:
+            import subprocess
+            res = subprocess.run(
+                ["git", "diff", "--numstat", base_ref, "HEAD"],
+                cwd=str(worktree_path),
+                capture_output=True, text=True, timeout=15,
+            )
+            if res.returncode == 0:
+                for line in res.stdout.splitlines():
+                    parts = line.split("\t")
+                    if len(parts) >= 3:
+                        try:
+                            stats["lines_added"] += int(parts[0]) if parts[0] != "-" else 0
+                            stats["lines_deleted"] += int(parts[1]) if parts[1] != "-" else 0
+                        except (ValueError, TypeError):
+                            pass
+            res2 = subprocess.run(
+                ["git", "diff", "--diff-filter=D", "--name-only", base_ref, "HEAD"],
+                cwd=str(worktree_path),
+                capture_output=True, text=True, timeout=15,
+            )
+            if res2.returncode == 0:
+                stats["files_deleted"] = [
+                    line.strip() for line in res2.stdout.splitlines() if line.strip()
+                ]
+        except Exception as e:  # pragma: no cover
+            logger.debug("_get_diff_stats failed: %s", e)
+        return stats
+
+    def _run_harness_verification(
+        self,
+        issue: Issue,
+        wt,
+        prompt: str,
+        max_turns: int,
+        category: str,
+    ) -> tuple[bool, str]:
+        """Run sensors after a fix and retry agent with feedback on failures.
+
+        Returns a tuple ``(passed, last_agent_output)``. ``passed`` reports
+        whether sensors eventually passed. The caller is responsible for
+        deciding whether to proceed with PR creation.
+        """
+        if not self._harness_enabled():
+            return True, ""
+        harness_cfg = self.config.harness
+        try:
+            changed_files = self._get_changed_files(wt.path, wt.base_ref)
+            diff_stats = self._get_diff_stats(wt.path, wt.base_ref)
+            risk = (
+                self._risk_scorer.assess_risk(changed_files, diff_stats)
+                if self._risk_scorer is not None
+                else None
+            )
+            report = self._sensor_engine.run_all_sensors(changed_files=changed_files)
+            if risk is not None:
+                report.risk_level = risk.level
+            if report.all_passed:
+                logger.info(
+                    "Harness verification passed (risk=%s)",
+                    getattr(risk, "level", "?"),
+                )
+                return True, ""
+
+            last_output = ""
+            for retry in range(max(0, harness_cfg.max_feedback_retries)):
+                logger.info(
+                    "Harness retry %d/%d for %s",
+                    retry + 1, harness_cfg.max_feedback_retries, issue.hash,
+                )
+                feedback_prompt = f"{prompt}\n\n{report.feedback_prompt}"
+                try:
+                    agent_result = self.deps.agent.heal(
+                        feedback_prompt,
+                        max_turns=max_turns,
+                        category=category,
+                        workspace=wt.path,
+                    )
+                    last_output = agent_result.output or ""
+                except Exception as e:  # pragma: no cover
+                    logger.warning("Harness retry agent.heal failed: %s", e)
+                    break
+                changed_files = self._get_changed_files(wt.path, wt.base_ref)
+                report = self._sensor_engine.run_all_sensors(changed_files=changed_files)
+                if report.all_passed:
+                    logger.info(
+                        "Harness verification passed on retry %d", retry + 1,
+                    )
+                    return True, last_output
+            logger.warning("Harness verification failed after all retries")
+            return False, last_output
+        except Exception as e:  # pragma: no cover
+            logger.warning("Harness verification crashed (treated as pass): %s", e)
+            return True, ""
+
     def _interruptible_sleep(self, seconds: float) -> None:
         """Sleep in small chunks so shutdown signals are handled quickly."""
         end = time.time() + seconds
@@ -284,12 +506,19 @@ class Kernel:
         report = RoundReport(run_id=run_id, round_num=self._round_num)
         t0 = time.time()
         try:
-            issues = self._detect()
+            # Knowledge graph incremental maintenance (rate-limited, non-blocking)
+            self._maybe_update_knowledge()
+
+            issues, probe_reports = self._detect()
             report.issues_seen = len(issues)
+            self._evaluate_rules(probe_reports, report=report)
+            self._maybe_run_rca(issues)
             self._handle_issues(issues, report=report)
             self._maybe_decompose_goals()
             self._handle_features(report=report)
             self._maybe_run_health_monitor(report=report)
+            self._maybe_capture_kpi_snapshot()
+            self._maybe_run_trend_analysis()
         except Exception as e:
             logger.exception("Kernel round failed: %s", e)
             report.duration_seconds = time.time() - t0
@@ -298,8 +527,18 @@ class Kernel:
             report.code_hash = self._current_code_hash()
         return report
 
+    # ── stage 0: knowledge maintenance ─────────────────────────────────────
+    def _maybe_update_knowledge(self) -> None:
+        """Invoke knowledge graph incremental maintenance. Never raises."""
+        if self._knowledge_maintainer is None:
+            return
+        try:
+            self._knowledge_maintainer.maybe_update()
+        except Exception as e:  # pragma: no cover
+            logger.debug("Knowledge maintenance error: %s", e)
+
     # ── stage 1: detect ────────────────────────────────────────────────────
-    def _detect(self) -> list[Issue]:
+    def _detect(self) -> tuple[list[Issue], list[ProbeRunReport]]:
         ctx = ProbeContext(
             repo_root=self.deps.repo_root,
             config=None,        # type: ignore[arg-type] — kernel does not depend on schema
@@ -311,7 +550,132 @@ class Kernel:
             per_probe_timeout_seconds=self.config.per_probe_timeout_seconds,
             enabled_ids=self.config.enabled_probe_ids,
         )
-        return aggregate_issues(reports)
+        return aggregate_issues(reports), reports
+
+    # ── stage 1.5: rule engine evaluation ──────────────────────────────────
+    def _evaluate_rules(
+        self, probe_reports: list[ProbeRunReport], *, report: RoundReport
+    ) -> None:
+        """评估复合规则；无规则配置时零开销跳过。"""
+        if not self.config.rules:
+            return
+        # 收集 probe raw_data: {probe_id: raw_dict}
+        probe_results: dict[str, dict] = {}
+        for pr in probe_reports:
+            if pr.raw_data:
+                probe_results[pr.probe_id] = pr.raw_data
+        if not probe_results:
+            return
+
+        engine = RuleEngine(self.config.rules)
+        evaluations = engine.evaluate(probe_results)
+        for ev in evaluations:
+            if ev.triggered:
+                self._handle_rule_action(ev, report=report)
+
+    def _handle_rule_action(self, ev, *, report: RoundReport) -> None:
+        """根据触发的规则执行对应 action。"""
+        from vivify.probes.rule_engine import RuleEvaluation
+
+        rule = ev.rule
+        logger.info(
+            "Rule triggered: [%s] %s — action=%s severity=%s",
+            rule.name, rule.message or '(no message)', rule.action, rule.severity,
+        )
+        if rule.action == "create_feature":
+            try:
+                fr = FeatureRequest(
+                    title=f"[rule:{rule.name}] {rule.message}"[:200],
+                    description=(
+                        f"Triggered by composite rule '{rule.name}'.\n"
+                        f"Matched conditions: {', '.join(ev.matched_conditions)}\n"
+                        f"Severity: {rule.severity}"
+                    ),
+                    type="improvement",
+                    priority="P1" if rule.severity in ("high", "critical") else "P2",
+                )
+                self.deps.storage.create_feature(fr)
+            except Exception as e:  # pragma: no cover
+                logger.warning("Rule action create_feature failed: %s", e)
+        elif rule.action == "escalate":
+            logger.warning(
+                "Rule escalation: %s — %s", rule.name, rule.message,
+            )
+        else:
+            # Default: create_issue — log as action for visibility
+            try:
+                self.deps.storage.log_action(
+                    ActionLog(
+                        run_id=report.run_id,
+                        round_num=self._round_num,
+                        action_type="rule_triggered",
+                        status="triggered",
+                        category="rule_engine",
+                        title=f"[{rule.name}] {rule.message}"[:200],
+                        result_summary=(
+                            f"Matched: {', '.join(ev.matched_conditions)}"
+                        )[:2000],
+                        details={
+                            "rule_name": rule.name,
+                            "severity": rule.severity,
+                            "action": rule.action,
+                            "matched_conditions": ev.matched_conditions,
+                        },
+                    )
+                )
+            except Exception as e:  # pragma: no cover
+                logger.debug("Rule action log failed: %s", e)
+
+    # ── stage 1.6: RCA pre-fix enrichment ────────────────────────────
+    def _maybe_run_rca(self, issues: list[Issue]) -> None:
+        """对检测到的 issues 进行聚类 + 重复根因分析。
+
+        失败不影响主循环；RCA 上下文会被暂存到 ``self._rca_contexts``，
+        供后续 _try_agent_fix 读取并拼接到 fix prompt。
+        """
+        # 清理上一轮的上下文，避免跨轮泄漏
+        self._rca_contexts.clear()
+        if not issues or self._rca is None:
+            return
+        if not self.config.intelligence.rca_enabled:
+            return
+        try:
+            # Issue 聚类（仅记录日志，供后续可观测性使用）
+            try:
+                clusters = self._rca.group_similar_issues(issues)
+                if len(clusters) < len(issues):
+                    logger.info(
+                        "RCA clustered %d issues into %d groups",
+                        len(issues), len(clusters),
+                    )
+            except Exception as e:  # pragma: no cover
+                logger.debug("Issue clustering failed: %s", e)
+
+            # 对重复 issue 触发 RCA
+            rca_count = 0
+            max_per_round = max(0, self.config.intelligence.rca_max_per_round)
+            for issue in issues:
+                if rca_count >= max_per_round:
+                    break
+                try:
+                    rca_report = self._rca.analyze_recurrence(issue)
+                except Exception as e:  # pragma: no cover
+                    logger.debug("analyze_recurrence(%s) failed: %s", issue.hash, e)
+                    continue
+                if rca_report is None:
+                    continue
+                try:
+                    self._rca_contexts[issue.hash] = self._rca.format_rca_context(rca_report)
+                except Exception as e:  # pragma: no cover
+                    logger.debug("format_rca_context failed: %s", e)
+                    continue
+                rca_count += 1
+                logger.info(
+                    "RCA generated for %s (recurrence=%d)",
+                    issue.hash, rca_report.recurrence_count,
+                )
+        except Exception as e:
+            logger.warning("RCA analysis failed: %s", e)
 
     # ── stage 2: handle issues ─────────────────────────────────────────────
     def _handle_issues(self, issues: list[Issue], *, report: RoundReport) -> None:
@@ -402,14 +766,38 @@ class Kernel:
         return success
 
     def _try_agent_fix(self, issue: Issue, *, report: RoundReport) -> bool:
+        # Doom-loop pre-check: skip when the same fingerprint repeats too often.
+        if self._harness_enabled() and self._doom_detector is not None:
+            try:
+                self._doom_detector.record_action(
+                    category=issue.category,
+                    issue_hash=issue.hash,
+                    action_type="agent_fix",
+                )
+                if self._doom_detector.is_looping():
+                    escape = self._doom_detector.get_escape_strategy()
+                    logger.warning(
+                        "Doom-loop detected for %s, skipping. %s",
+                        issue.hash, escape.splitlines()[0] if escape else "",
+                    )
+                    self._log_issue_action(
+                        report.run_id, "heal", "skipped", issue,
+                        summary="doom-loop detected; skipped agent fix",
+                    )
+                    return False
+            except Exception as e:  # pragma: no cover
+                logger.debug("Doom-loop check failed: %s", e)
+
         slug = f"{issue.category}-{issue.hash}"
         wt = self.deps.worktrees.create(slug)
         t0 = time.time()
         try:
             history = load_history(self.deps.storage, "fix_issue")
+            rca_hint = self._rca_contexts.get(issue.hash, "")
             prompt = builders.build_fix_issue(
                 issue, workspace=str(wt.path),
                 recent_history=history,
+                remediation_hint=rca_hint,
                 enable_self_improve=self.config.enable_self_improve_prompt,
             )
             agent_result = self.deps.agent.heal(
@@ -418,6 +806,26 @@ class Kernel:
                 workspace=wt.path,
             )
             output = agent_result.output or ""
+
+            # PEV verification: run sensors after fix; retry with feedback on failure.
+            if self._harness_enabled():
+                passed, retry_output = self._run_harness_verification(
+                    issue=issue,
+                    wt=wt,
+                    prompt=prompt,
+                    max_turns=30,
+                    category="fix_issue",
+                )
+                if retry_output:
+                    output = retry_output
+                if not passed:
+                    self._log_issue_action(
+                        report.run_id, "heal", "failed", issue,
+                        summary="harness verification failed after retries",
+                        duration=time.time() - t0,
+                    )
+                    return False
+
             quality = run_quality_checks(wt.path, base_ref=wt.base_ref)
             if not quality.passed:
                 self._log_issue_action(
@@ -439,6 +847,10 @@ class Kernel:
                 merge_outcome = self.deps.auto_merge.try_merge(pr, decision=decision, cwd=wt.path)
             else:
                 merge_outcome = None
+
+            # PR 合并后标记知识图谱需要更新
+            if merge_outcome and merge_outcome.merged and self._knowledge_maintainer:
+                self._knowledge_maintainer.mark_update_needed()
 
             # 仅在 PR 实际合并后触发部署
             if self._deployer and self.config.deploy.enabled:
@@ -565,6 +977,12 @@ class Kernel:
         except Exception as e:  # pragma: no cover
             logger.warning("feature timeout recovery failed: %s", e)
 
+        # Fix #69: recover features stuck in deployed_with_issues due to PR failures
+        try:
+            pipeline._recover_failed_deployments()
+        except Exception as e:  # pragma: no cover
+            logger.warning("feature deployment recovery failed: %s", e)
+
         pending = []
         for status in ("pending", "approved"):
             try:
@@ -592,6 +1010,10 @@ class Kernel:
                 report.features_processed += 1
             except Exception as e:
                 logger.exception("FeaturePipeline crashed on #%s: %s", fr.id, e)
+
+        # Feature 开发完成后标记知识图谱需要更新
+        if report.features_processed > 0 and self._knowledge_maintainer:
+            self._knowledge_maintainer.mark_update_needed()
 
     # ── stage 3.5: goals auto-decomposition ────────────────────────────────
     def _maybe_decompose_goals(self) -> None:
@@ -666,6 +1088,14 @@ class Kernel:
             default_branch=self.config.default_branch,
         )
 
+        # 将最近一次趋势分析产出的健康摘要作为上下文，供后续消费者使用。
+        health_context = self._build_health_context()
+        if health_context:
+            logger.info(
+                "Goal decompose health context: grade=%s",
+                getattr(self._latest_health_summary, "grade", "?"),
+            )
+
         total_created = 0
         any_failure = False
         for goal in doc.goals:
@@ -695,6 +1125,28 @@ class Kernel:
             total_created,
         )
 
+    def _build_health_context(self) -> str:
+        """将最近一次趋势分析产出的 HealthSummary 渲染为 Markdown 上下文。
+
+        返回空串表示尚未生成趋势分析，调用者可跳过注入。
+        """
+        h = getattr(self, "_latest_health_summary", None)
+        if not h:
+            return ""
+        try:
+            improving = ", ".join(h.improving) if h.improving else "none"
+            degrading = ", ".join(h.degrading) if h.degrading else "none"
+            risks = ", ".join(h.risks) if h.risks else "none"
+            return (
+                f"\n## Project Health (Grade: {h.grade})\n"
+                f"Improving: {improving}\n"
+                f"Degrading: {degrading}\n"
+                f"Risks: {risks}\n"
+            )
+        except Exception as e:  # pragma: no cover
+            logger.debug("_build_health_context failed: %s", e)
+            return ""
+
     def _store_feature_request(self, spec: FeatureSpec) -> Optional[int]:
         """将 FeatureSpec 写入 feature_requests 表，返回新 id 或 None。"""
         try:
@@ -723,6 +1175,51 @@ class Kernel:
                 logger.info("health monitor created FRs for %d regressions", len(regressions))
         except Exception as e:  # pragma: no cover
             logger.warning("HealthMonitor.run failed: %s", e)
+
+    # ── stage 5: KPI snapshot capture ──────────────────────────────────
+    def _maybe_capture_kpi_snapshot(self) -> None:
+        """每轮末尾采集一条 KPI 快照，供趋势 Tab 使用。任何异常都不得中断主循环。"""
+        if self.config.dry_run or self._kpi_verifier is None:
+            return
+        try:
+            ctx = ProbeContext(
+                repo_root=self.deps.repo_root,
+                config=None,  # type: ignore[arg-type]
+                storage=self.deps.storage,
+                logger=logger.getChild("kpi"),
+            )
+            snap = self._kpi_verifier.capture(ctx)
+            logger.debug("KPI snapshot captured: %d metrics", len(snap.metrics))
+        except Exception as e:  # pragma: no cover
+            logger.debug("KPI snapshot capture failed: %s", e)
+
+    # ── stage 6: trend analysis (rate-limited) ──────────────────────
+    def _maybe_run_trend_analysis(self) -> None:
+        """按 ``trend_interval_rounds`` 周期执行趋势分析，生成项目健康摘要。
+
+        健康摘要被存储到 ``self._latest_health_summary``，供
+        ``_maybe_decompose_goals`` 构建 GoalDecomposer 上下文。
+        失败不影响主循环。
+        """
+        if self._trend_analyzer is None:
+            return
+        if not self.config.intelligence.trend_enabled:
+            return
+        self._trend_round_counter += 1
+        if self._trend_round_counter < self.config.intelligence.trend_interval_rounds:
+            return
+        self._trend_round_counter = 0
+        try:
+            health = self._trend_analyzer.generate_health_summary()
+            self._latest_health_summary = health
+            logger.info(
+                "Health summary: grade=%s, improving=%s, degrading=%s",
+                health.grade,
+                ", ".join(health.improving) or "none",
+                ", ".join(health.degrading) or "none",
+            )
+        except Exception as e:
+            logger.warning("Trend analysis failed: %s", e)
 
     # ── helpers ────────────────────────────────────────────────────────────
     def _log_issue_action(

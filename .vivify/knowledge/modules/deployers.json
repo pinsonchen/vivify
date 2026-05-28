@@ -1,0 +1,28 @@
+{
+  "name": "deployers",
+  "path": "vivify/deployers",
+  "summary": "部署子系统",
+  "responsibility": "deployment-subsystem",
+  "layer": "core",
+  "exports": [
+    "CommandDeployer",
+    "DeployResult",
+    "Deployer",
+    "SSHDeployer",
+    "WebhookDeployer",
+    "get_deployer"
+  ],
+  "dependencies": [],
+  "files": [
+    "__init__.py",
+    "base.py",
+    "command.py",
+    "ssh.py",
+    "webhook.py",
+    "__init__.py",
+    "base.py",
+    "command.py",
+    "ssh.py",
+    "webhook.py"
+  ]
+}

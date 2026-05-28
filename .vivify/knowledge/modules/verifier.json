@@ -1,0 +1,24 @@
+{
+  "name": "verifier",
+  "path": "vivify/verifier",
+  "summary": "Verifier module",
+  "responsibility": "",
+  "layer": "core",
+  "exports": [
+    "BeforeAfterVerifier",
+    "KpiSnapshotVerifier",
+    "compute_feature_kpis"
+  ],
+  "dependencies": [
+    "module:vivify/interfaces",
+    "module:vivify/models"
+  ],
+  "files": [
+    "__init__.py",
+    "before_after.py",
+    "kpi_snapshot.py",
+    "__init__.py",
+    "before_after.py",
+    "kpi_snapshot.py"
+  ]
+}

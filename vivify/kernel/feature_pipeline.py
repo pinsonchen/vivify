@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import subprocess
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -32,10 +33,12 @@ from vivify.agents.history import load_history
 from vivify.agents.prompts import builders, parsers
 from vivify.interfaces.agent import CodingAgent
 from vivify.interfaces.storage import StorageProvider
+from vivify.kernel.feature_states import FeatureStateMachine, InvalidTransitionError
 from vivify.models.agent_result import AgentResult
 from vivify.models.feature import FeatureRequest
 from vivify.models.snapshot import ActionLog, KnowledgeEntry
 from vivify.pr_mode.auto_merge import AutoMerge
+from vivify.pr_mode.auto_revert import AutoReverter
 from vivify.pr_mode.pr_creator import PrCreator, PullRequest
 from vivify.pr_mode.quality_check import QualityCheckResult, run_quality_checks
 from vivify.pr_mode.self_grow_guard import classify_worktree
@@ -47,6 +50,20 @@ logger = logging.getLogger(__name__)
 # ────────────────────────────────────────────────────────────────────────────────
 # Config + result types
 # ────────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class AgentCostModel:
+    """按优先级分配 Agent 资源 (max_turns / timeout)."""
+
+    p0_max_turns: int = 100
+    p0_timeout: int = 7200    # 2 小时
+    p1_max_turns: int = 60
+    p1_timeout: int = 3600    # 1 小时
+    p2_max_turns: int = 30
+    p2_timeout: int = 1800    # 30 分钟
+    p3_max_turns: int = 15
+    p3_timeout: int = 900     # 15 分钟
 
 
 @dataclass
@@ -66,6 +83,11 @@ class FeaturePipelineConfig:
     developing_timeout_minutes: int = 90
     verifying_timeout_minutes: int = 60
     max_retries: int = 3
+    # ── Task #74: quality gate + auto revert ───────────────────────────────
+    max_verify_retries: int = 2        # 验证失败最大重试次数
+    auto_revert_enabled: bool = True   # 是否启用自动 revert
+    # ── Task #73: Agent cost model ────────────────────────────────────────
+    cost_model: AgentCostModel = field(default_factory=AgentCostModel)
 
 
 @dataclass
@@ -107,6 +129,19 @@ class FeaturePipeline:
         self.run_id = run_id
 
     # ── public entry point ─────────────────────────────────────────────────
+
+    def _get_agent_params(self, feature: FeatureRequest) -> tuple[int, int]:
+        """Return (max_turns, timeout) based on feature priority via cost model."""
+        cost = self.config.cost_model
+        priority = (getattr(feature, "priority", None) or "P2").upper()
+        params = {
+            "P0": (cost.p0_max_turns, cost.p0_timeout),
+            "P1": (cost.p1_max_turns, cost.p1_timeout),
+            "P2": (cost.p2_max_turns, cost.p2_timeout),
+            "P3": (cost.p3_max_turns, cost.p3_timeout),
+        }
+        return params.get(priority, (cost.p2_max_turns, cost.p2_timeout))
+
     def run(self, feature: FeatureRequest, *, round_num: int = 0) -> FeatureRunReport:
         report = FeatureRunReport(feature_id=feature.id, status=feature.status)
         try:
@@ -135,7 +170,7 @@ class FeaturePipeline:
         result = self.agent.heal(
             prompt,
             max_turns=self.config.max_turns_evaluate,
-            category="feature_evaluate",
+            category="evaluate_feature",
             workspace=self.worktrees.repo_root,
             timeout_seconds=self.config.timeout_evaluate_seconds,
         )
@@ -211,6 +246,8 @@ class FeaturePipeline:
         slug = feature.title or f"feature-{feature.id}"
         wt = self.worktrees.create(slug)
         result: Optional[AgentResult] = None
+        # Task #73: resolve agent budget from cost model based on priority
+        max_turns, timeout = self._get_agent_params(feature)
         try:
             self._update(feature, status="developing")
             history = load_history(self.storage, "feature_develop")
@@ -222,10 +259,10 @@ class FeaturePipeline:
             )
             result = self.agent.heal(
                 prompt,
-                max_turns=self.config.max_turns_develop,
-                category="feature_develop",
+                max_turns=max_turns,
+                category="develop_feature",
                 workspace=wt.path,
-                timeout_seconds=self.config.timeout_develop_seconds,
+                timeout_seconds=timeout,
             )
             output = result.output or ""
 
@@ -250,6 +287,26 @@ class FeaturePipeline:
                     duration=time.time() - start,
                 )
                 report.status = "deployed_with_issues"
+                return
+
+            # ── Fix #69: pre-check for actual code changes before push_and_open ──
+            if not self._has_actual_changes(wt.path, wt.base_ref):
+                logger.warning(
+                    "Feature #%s: AI agent produced no actual code changes, "
+                    "rolling back to approved for retry",
+                    feature.id,
+                )
+                new_retry = int(getattr(feature, "retry_count", 0) or 0) + 1
+                self._update(
+                    feature,
+                    status="approved",
+                    retry_count=new_retry,
+                    development_result=(
+                        "AI agent did not produce actual code changes; "
+                        f"will retry (attempt {new_retry})"
+                    ),
+                )
+                report.status = "approved"
                 return
 
             commit_info = parsers.parse_commit_info(output, repo_url=self.config.repo_url)
@@ -310,15 +367,26 @@ class FeaturePipeline:
                 self.worktrees.remove(wt)
             except Exception as e:  # pragma: no cover
                 logger.warning("worktree cleanup failed: %s", e)
-            report.durations["develop"] = time.time() - start
+            elapsed = time.time() - start
+            report.durations["develop"] = elapsed
+            # Task #73: append cost info to development_result
+            cost_info = (
+                f"\n[cost] priority={getattr(feature, 'priority', '?')}, "
+                f"max_turns={max_turns}, timeout={timeout}, elapsed={elapsed:.0f}s"
+            )
+            prev_result = getattr(feature, "development_result", None) or ""
+            self._update(feature, development_result=(prev_result + cost_info)[-2000:])
             self._log_action(
                 round_num=round_num, action_type="feature_develop",
                 status="success" if report.status == "deployed" else "failed",
                 feature=feature,
                 summary=(result.output[-1000:] if result and result.output else "")[:2000],
                 details={"followups": report.followups_created,
-                         "pr_url": report.pr.url if report.pr else None},
-                duration=report.durations["develop"],
+                         "pr_url": report.pr.url if report.pr else None,
+                         "cost_max_turns": max_turns,
+                         "cost_timeout": timeout,
+                         "cost_elapsed": round(elapsed)},
+                duration=elapsed,
                 pr_url=report.pr.url if report.pr else None,
                 commit_hash=feature.commit_hash,
             )
@@ -338,7 +406,7 @@ class FeaturePipeline:
         result = self.agent.heal(
             prompt,
             max_turns=self.config.max_turns_verify,
-            category="feature_verify",
+            category="verify_feature",
             workspace=self.worktrees.repo_root,
             timeout_seconds=self.config.timeout_verify_seconds,
         )
@@ -564,6 +632,26 @@ class FeaturePipeline:
                     development_result=(quality.summary or "")[:2000],
                 )
                 report.status = "deployed_with_issues"
+                return
+
+            # Fix #69: pre-check for actual code changes (batch path)
+            if not self._has_actual_changes(wt.path, wt.base_ref):
+                logger.warning(
+                    "Feature #%s (batch): no actual code changes, "
+                    "rolling back to approved",
+                    feature.id,
+                )
+                new_retry = int(getattr(feature, "retry_count", 0) or 0) + 1
+                self._update(
+                    feature,
+                    status="approved",
+                    retry_count=new_retry,
+                    development_result=(
+                        "AI agent did not produce actual code changes; "
+                        f"will retry (attempt {new_retry})"
+                    ),
+                )
+                report.status = "approved"
                 return
 
             # PR creation
@@ -930,13 +1018,142 @@ class FeaturePipeline:
     def _update_feature_status(
         self, feature: FeatureRequest, new_status: str, **extra_fields,
     ) -> None:
-        """Unified status transition with automatic timestamp recording.
+        """统一状态转移入口 — 通过状态机校验后再更新。
 
-        Thin wrapper around :meth:`_update` for callers that prefer an explicit
-        intent. Existing direct ``_update(feature, status=...)`` calls keep
-        working and still get timestamps via the same code path.
+        Validates the transition via :class:`FeatureStateMachine` before
+        delegating to :meth:`_update`.  Invalid transitions are logged as
+        warnings and silently skipped (production-safe).
         """
+        old_status = feature.status
+
+        # 状态机校验
+        try:
+            FeatureStateMachine.validate_transition(old_status, new_status)
+        except InvalidTransitionError as e:
+            logger.warning(
+                "Feature #%s: %s — skipping transition", feature.id, e,
+            )
+            return  # 静默跳过非法转移（生产环境不中断）
+
         self._update(feature, status=new_status, **extra_fields)
+
+    # ── Fix #69: pre-push change detection helper ─────────────────────────
+    @staticmethod
+    def _has_actual_changes(worktree_path, base_ref: str = "origin/main") -> bool:
+        """Check whether the worktree branch has commits relative to *base_ref*."""
+        try:
+            result = subprocess.run(
+                ["git", "log", f"{base_ref}..HEAD", "--oneline"],
+                capture_output=True, text=True, timeout=10,
+                cwd=str(worktree_path),
+            )
+            return result.returncode == 0 and bool(result.stdout.strip())
+        except Exception:
+            return False  # assume no changes on error to avoid invalid PRs
+
+    # ── Fix #69: recover deployed_with_issues caused by PR failures ───────
+    def _recover_failed_deployments(self) -> None:
+        """Reset features stuck in deployed_with_issues due to PR creation failures.
+
+        Features that ended up in this state because the branch had no new
+        commits (AI agent didn't produce changes) or because of transient PR
+        errors are rolled back to ``approved`` so the next round retries them.
+        Features that exhausted their retry budget are auto-rejected.
+        """
+        try:
+            stuck = self.storage.list_features(status="deployed_with_issues")
+        except Exception as e:  # pragma: no cover
+            logger.debug("list_features(deployed_with_issues) failed: %s", e)
+            return
+
+        # Keywords indicating a PR/push failure (not a real functionality issue)
+        _RECOVERABLE_KEYWORDS = (
+            "No commits",
+            "no new commit",
+            "PR creation failed",
+            "push_and_open",
+            "git push failed",
+            "Remote session failed",
+        )
+
+        for f in stuck:
+            dev_result = getattr(f, "development_result", "") or ""
+            if not any(kw.lower() in dev_result.lower() for kw in _RECOVERABLE_KEYWORDS):
+                continue  # likely a real quality/functionality issue; leave it
+
+            new_retry = int(getattr(f, "retry_count", 0) or 0) + 1
+            if new_retry >= self.config.max_retries:
+                logger.info(
+                    "Feature #%d: max retries (%d) reached, rejecting",
+                    f.id, self.config.max_retries,
+                )
+                # Task #74: 尝试自动 revert 已合并的代码
+                self._maybe_auto_revert(f)
+                if f.status != "rejected":
+                    self._update(
+                        f,
+                        status="rejected",
+                        retry_count=new_retry,
+                        feasibility=(
+                            f"Auto-rejected: PR creation failed {new_retry} times"
+                        ),
+                    )
+                continue
+
+            logger.info(
+                "Feature #%d: recovering from PR failure, "
+                "rolling back to approved (retry %d/%d)",
+                f.id, new_retry, self.config.max_retries,
+            )
+            self._update(f, status="approved", retry_count=new_retry)
+
+    # ── Task #74: auto-revert for failed features ──────────────────────────
+    def _maybe_auto_revert(self, feature: FeatureRequest) -> None:
+        """检查是否需要自动 revert 已合并的代码。
+
+        当 feature 验证失败且重试超限、且存在 commit_hash 时，
+        自动创建 revert PR 撤回代码。
+        """
+        if not self.config.auto_revert_enabled:
+            return
+        if not getattr(feature, "commit_hash", None):
+            return
+        retry_count = int(getattr(feature, "retry_count", 0) or 0)
+        if retry_count < self.config.max_verify_retries:
+            return
+
+        logger.info(
+            "Feature #%s: triggering auto-revert for commit %s",
+            feature.id, feature.commit_hash,
+        )
+        import os
+        reverter = AutoReverter(
+            repo_path=str(self.worktrees.repo_root),
+            base_branch=self.pr_creator.config.base_branch,
+            env=os.environ.copy(),
+        )
+        result = reverter.revert_commit(
+            commit_hash=feature.commit_hash,
+            feature_title=feature.title or f"feature-{feature.id}",
+            feature_id=feature.id,
+        )
+
+        prev_result = getattr(feature, "development_result", None) or ""
+        if result.success:
+            new_result = prev_result + f"\n[auto-revert] PR: {result.revert_pr_url}"
+        else:
+            new_result = prev_result + f"\n[auto-revert failed] {result.error}"
+
+        # 标记为 rejected
+        self._update(
+            feature,
+            status="rejected",
+            development_result=new_result[-2000:],
+            feasibility=(
+                f"Auto-rejected + reverted: verification failed "
+                f"after {retry_count} retries"
+            ),
+        )
 
     # ── Task #61: timeout detection & auto-recovery ────────────────────────
     def _detect_and_recover_timeouts(self) -> None:
@@ -1061,6 +1278,7 @@ class FeaturePipeline:
 
 
 __all__ = [
+    "AgentCostModel",
     "FeaturePipeline",
     "FeaturePipelineConfig",
     "FeatureRunReport",

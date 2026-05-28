@@ -1,0 +1,43 @@
+{
+  "name": "pr_mode",
+  "path": "vivify/pr_mode",
+  "summary": "PR创建和工作树管理",
+  "responsibility": "创建 Vivify PR创建和工作树管理的技术文档。详细说明 pr_mode/pr_creator.py 中的默认标签变更（auto-heal → vivify）、PR主体文件名更新（.auto-heal-pr-body.md → .vivify-pr-body.md）。解释 self_grow_guard.py 中的插件路径更新（auto_heal/ → vivify/）、内核前缀变更（auto",
+  "layer": "core",
+  "exports": [
+    "AutoMerge",
+    "AutoMergeConfig",
+    "DEFAULT_PLUGIN_PATHS",
+    "DiffClass",
+    "GuardDecision",
+    "MergeOutcome",
+    "PrCreator",
+    "PrCreatorConfig",
+    "PullRequest",
+    "QualityCheckResult",
+    "Worktree",
+    "WorktreeManager",
+    "classify_diff",
+    "classify_worktree",
+    "run_quality_checks",
+    "AutoReverter",
+    "RevertResult"
+  ],
+  "dependencies": [],
+  "files": [
+    "__init__.py",
+    "auto_merge.py",
+    "auto_revert.py",
+    "pr_creator.py",
+    "quality_check.py",
+    "self_grow_guard.py",
+    "worktree.py",
+    "__init__.py",
+    "auto_merge.py",
+    "auto_revert.py",
+    "pr_creator.py",
+    "quality_check.py",
+    "self_grow_guard.py",
+    "worktree.py"
+  ]
+}

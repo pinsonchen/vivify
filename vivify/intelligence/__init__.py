@@ -10,6 +10,13 @@ from .classifier import Classifier, ProjectProfile, ScenarioType
 from .configurator import ConfigQuestion, Configurator, SCENARIO_FIXERS, SCENARIO_PROBES
 from .interviewer import Interviewer
 from .scanner import ProjectSignals, Scanner
+from .wiki_generator import (
+    DEFAULT_WIKI_DIR,
+    WikiContext,
+    generate_wiki,
+    load_wiki_context_if_available,
+    parse_wiki_metadata,
+)
 
 __all__ = [
     "AIAnalyzer",
@@ -24,4 +31,9 @@ __all__ = [
     "SCENARIO_PROBES",
     "SCENARIO_FIXERS",
     "Interviewer",
+    "WikiContext",
+    "DEFAULT_WIKI_DIR",
+    "generate_wiki",
+    "parse_wiki_metadata",
+    "load_wiki_context_if_available",
 ]

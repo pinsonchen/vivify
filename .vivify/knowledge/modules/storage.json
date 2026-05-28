@@ -1,0 +1,22 @@
+{
+  "name": "storage",
+  "path": "vivify/storage",
+  "summary": "Web仪表板系统",
+  "responsibility": "web-dashboard-system",
+  "layer": "data",
+  "exports": [
+    "SqliteStorageProvider"
+  ],
+  "dependencies": [
+    "module:vivify/interfaces",
+    "module:vivify/models"
+  ],
+  "files": [
+    "__init__.py",
+    "sqlite_provider.py",
+    "__init__.py",
+    "__init__.py",
+    "sqlite_provider.py",
+    "__init__.py"
+  ]
+}

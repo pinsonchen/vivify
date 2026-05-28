@@ -65,6 +65,9 @@ URL_RE = re.compile(r"https?://[^\s)\]>\"]+")
 
 @dataclass
 class ProjectSignals:
+    # 项目根目录
+    project_root: Path | None = None
+
     files: list[str] = field(default_factory=list)
     file_extensions: Counter = field(default_factory=Counter)
     total_files: int = 0
@@ -133,6 +136,7 @@ class Scanner:
 
     def scan(self) -> ProjectSignals:
         signals = ProjectSignals()
+        signals.project_root = self.repo_root
         self._scan_files(signals)
         self._scan_readme(signals)
         self._scan_package_json(signals)

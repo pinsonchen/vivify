@@ -1,0 +1,31 @@
+{
+  "name": "goals",
+  "path": "vivify/goals",
+  "summary": "自动目标分解功能",
+  "responsibility": "automatic-goals-decomposition",
+  "layer": "core",
+  "exports": [
+    "AgentGoalDecomposer",
+    "GoalDecomposerConfig",
+    "GoalsDoc",
+    "is_duplicate",
+    "parse_goal_list",
+    "parse_goals",
+    "title_similarity"
+  ],
+  "dependencies": [
+    "module:vivify/agents",
+    "module:vivify/interfaces",
+    "module:vivify/models"
+  ],
+  "files": [
+    "__init__.py",
+    "decomposer.py",
+    "differ.py",
+    "parser.py",
+    "__init__.py",
+    "decomposer.py",
+    "differ.py",
+    "parser.py"
+  ]
+}

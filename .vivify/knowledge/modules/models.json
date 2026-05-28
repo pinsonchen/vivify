@@ -1,0 +1,35 @@
+{
+  "name": "models",
+  "path": "vivify/models",
+  "summary": "Web仪表板系统",
+  "responsibility": "web-dashboard-system",
+  "layer": "data",
+  "exports": [
+    "ActionLog",
+    "AgentResult",
+    "FeatureRequest",
+    "FeatureSpec",
+    "FixResult",
+    "Goal",
+    "Issue",
+    "IssueLevel",
+    "KPI",
+    "KnowledgeEntry",
+    "KpiSnapshot"
+  ],
+  "dependencies": [],
+  "files": [
+    "__init__.py",
+    "agent_result.py",
+    "feature.py",
+    "fix_result.py",
+    "issue.py",
+    "snapshot.py",
+    "__init__.py",
+    "agent_result.py",
+    "feature.py",
+    "fix_result.py",
+    "issue.py",
+    "snapshot.py"
+  ]
+}

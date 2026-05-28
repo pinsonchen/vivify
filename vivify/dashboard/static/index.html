@@ -31,6 +31,7 @@
         <button class="tab" data-tab="issues">问题</button>
         <button class="tab" data-tab="actions">动作</button>
         <button class="tab" data-tab="features">特性</button>
+        <button class="tab" data-tab="alerts">告警</button>
         <button class="tab" data-tab="trends">趋势</button>
     </nav>
 
@@ -63,6 +64,15 @@
                 <div class="card">
                     <h3>特性进度</h3>
                     <div id="feature-stats">-</div>
+                </div>
+            </div>
+            <!-- 特性状态统计卡片 -->
+            <div class="stats-grid" id="overview-stats-grid"></div>
+            <!-- 最近活动区域 -->
+            <div class="recent-activity" id="recent-activity">
+                <h3>最近活动</h3>
+                <div class="recent-activity-list" id="recent-activity-list">
+                    <div style="color:var(--text-muted);font-size:0.85rem;padding:1rem">加载中...</div>
                 </div>
             </div>
             <div class="log-panel">
@@ -136,6 +146,15 @@
                     <div class="kanban-cards"></div>
                 </div>
             </div>
+        </section>
+
+        <!-- 告警 Tab -->
+        <section id="tab-alerts" class="tab-content">
+            <div class="alerts-header">
+                <h3>告警中心</h3>
+                <span class="alerts-subtitle">聚合 Feature 失败和 Probe 异常事件</span>
+            </div>
+            <div id="alerts-list" class="alerts-list"></div>
         </section>
 
         <!-- 趋势 Tab -->

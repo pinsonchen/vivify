@@ -35,10 +35,12 @@ class RemoteSessionManager:
         binary: str = "qodercli",
         model: str = "ultimate",
         extra_args: list[str] | None = None,
+        permission_mode: str = "bypass_permissions",
     ):
         self.binary = binary
         self.model = model
         self.extra_args = extra_args or ["--yolo", "-q"]
+        self.permission_mode = permission_mode
 
     # ── public API ────────────────────────────────────────────────────────────
 
@@ -55,6 +57,7 @@ class RemoteSessionManager:
             "--remote", task,
             "--model", self.model,
             "--max-turns", str(max_turns),
+            "--permission-mode", self.permission_mode,
             "-w", str(workspace),
             *self.extra_args,
         ]

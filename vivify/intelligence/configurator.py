@@ -9,6 +9,25 @@ from .classifier import ProjectProfile, ScenarioType  # noqa: F401
 from .scanner import ProjectSignals
 
 
+def _fill_question(
+    questions: list["ConfigQuestion"], key: str, value: str, source: str
+) -> None:
+    """如果问题尚未设置默认值，则填充。"""
+    for q in questions:
+        if q.key == key and not q.default:
+            q.default = value
+            q.source = source
+            break
+
+
+def _has_value(questions: list["ConfigQuestion"], key: str) -> bool:
+    """检查某个问题是否已经有默认值。"""
+    for q in questions:
+        if q.key == key and q.default:
+            return True
+    return False
+
+
 @dataclass
 class ConfigQuestion:
     key: str
@@ -183,23 +202,23 @@ class Configurator:
         for q in questions:
             if q.default is not None:
                 continue
-
+    
             if q.key == "project.name":
                 if signals.project_name:
                     q.default = signals.project_name.strip()
                     q.source = "auto"
-
+    
             elif q.key == "project.description":
                 if signals.project_description:
                     q.default = signals.project_description.strip()
                     q.source = "auto"
-
+    
             elif q.key == "deploy.url":
                 url = self._pick_deploy_url(signals)
                 if url:
                     q.default = url
                     q.source = "readme"
-
+    
             elif q.key == "commands.test":
                 cmd = signals.test_command or signals.scripts.get("test")
                 if cmd:
@@ -211,15 +230,146 @@ class Configurator:
                                 break
                     q.default = cmd
                     q.source = "auto"
-
+    
             elif q.key == "commands.build":
                 if "build" in signals.scripts:
                     q.default = "npm run build"
                     q.source = "auto"
-
-            # health_endpoint：保持 default（已有 /health 兜底）
-
+    
+            # health_endpoint：保持 default（已有 /health 兑底）
+    
+        # ── 附加信号源：基于项目文件的 best-effort 推断 ──
+        if signals.project_root is not None:
+            self._discover_from_pyproject(signals, questions)
+            self._discover_from_package_json(signals, questions)
+            self._discover_from_workflows(signals, questions)
+            self._discover_from_makefile(signals, questions)
+    
         return questions
+    
+    # ---------- 附加发现源 ----------
+    
+    @staticmethod
+    def _discover_from_pyproject(
+        signals: ProjectSignals, questions: list[ConfigQuestion]
+    ) -> None:
+        """从 pyproject.toml 提取 description。"""
+        try:
+            assert signals.project_root is not None
+            pyproject = signals.project_root / "pyproject.toml"
+            if not pyproject.exists():
+                return
+            try:
+                import tomllib  # Python 3.11+
+            except ImportError:
+                try:
+                    import tomli as tomllib  # type: ignore[import-not-found,no-redef]
+                except ImportError:
+                    return
+            with open(pyproject, "rb") as f:
+                data = tomllib.load(f)
+            project = data.get("project", {}) if isinstance(data, dict) else {}
+            desc = project.get("description", "") if isinstance(project, dict) else ""
+            if desc:
+                _fill_question(questions, "project.description", desc, "pyproject.toml")
+        except Exception:
+            pass
+    
+    @staticmethod
+    def _discover_from_package_json(
+        signals: ProjectSignals, questions: list[ConfigQuestion]
+    ) -> None:
+        """从 package.json 提取 description。"""
+        try:
+            import json
+    
+            assert signals.project_root is not None
+            package_json = signals.project_root / "package.json"
+            if not package_json.exists():
+                return
+            pkg = json.loads(package_json.read_text(encoding="utf-8"))
+            desc = pkg.get("description", "") if isinstance(pkg, dict) else ""
+            if desc:
+                _fill_question(questions, "project.description", desc, "package.json")
+        except Exception:
+            pass
+    
+    @staticmethod
+    def _discover_from_workflows(
+        signals: ProjectSignals, questions: list[ConfigQuestion]
+    ) -> None:
+        """从 .github/workflows 推断 deploy.method 与 commands.test。"""
+        try:
+            assert signals.project_root is not None
+            workflows_dir = signals.project_root / ".github" / "workflows"
+            if not workflows_dir.is_dir():
+                return
+            workflow_files = list(workflows_dir.glob("*.yml")) + list(
+                workflows_dir.glob("*.yaml")
+            )
+    
+            # 1) deploy.method 推断（遇到首个命中即返回）
+            for wf in workflow_files:
+                try:
+                    content_lower = wf.read_text(encoding="utf-8").lower()
+                except OSError:
+                    continue
+                source = f".github/workflows/{wf.name}"
+                if "pages" in content_lower and "deploy" in content_lower:
+                    _fill_question(questions, "deploy.method", "github-pages", source)
+                    break
+                if "ssh" in content_lower and "deploy" in content_lower:
+                    _fill_question(questions, "deploy.method", "ssh", source)
+                    break
+                if "vercel" in content_lower:
+                    _fill_question(questions, "deploy.method", "vercel", source)
+                    break
+    
+            # 2) commands.test 推断
+            for wf in workflow_files:
+                try:
+                    content = wf.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                source = f".github/workflows/{wf.name}"
+                if "pytest" in content and not _has_value(questions, "commands.test"):
+                    _fill_question(
+                        questions,
+                        "commands.test",
+                        "python -m pytest --tb=short -q",
+                        source,
+                    )
+                elif "npm test" in content and not _has_value(questions, "commands.test"):
+                    _fill_question(questions, "commands.test", "npm test", source)
+        except Exception:
+            pass
+    
+    @staticmethod
+    def _discover_from_makefile(
+        signals: ProjectSignals, questions: list[ConfigQuestion]
+    ) -> None:
+        """从 Makefile 提取 test/build/lint 命令。"""
+        try:
+            import re
+    
+            assert signals.project_root is not None
+            makefile = signals.project_root / "Makefile"
+            if not makefile.exists():
+                return
+            content = makefile.read_text(encoding="utf-8")
+            for target in ("test", "lint", "build"):
+                match = re.search(
+                    rf"^{target}\s*:.*\n\t(.+)", content, re.MULTILINE
+                )
+                if match:
+                    _fill_question(
+                        questions,
+                        f"commands.{target}",
+                        f"make {target}",
+                        "Makefile",
+                    )
+        except Exception:
+            pass
 
     def get_probes(self, profile: ProjectProfile) -> list[str]:
         """返回该场景推荐的探针列表。"""

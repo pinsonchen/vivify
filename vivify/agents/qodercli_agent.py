@@ -17,7 +17,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Mapping, Optional, Sequence
+from typing import Dict, Mapping, Optional, Sequence
 
 from vivify.agents.remote_session import RemoteSession, RemoteSessionManager  # noqa: F401
 from vivify.agents.slot_manager import AGENT_ENV_TAG, wait_for_slot
@@ -47,6 +47,8 @@ class QoderCliConfig:
     slot_poll_interval_seconds: int = 15
     auto_trust_workspace: bool = True
     """When ``True`` we pipe ``yes\n`` on stdin to auto-trust new workdirs."""
+    permission_mode: str = "bypass_permissions"
+    """Permission mode for qodercli (default/accept_edits/bypass_permissions/dont_ask/plan/auto)."""
 
     # ── Remote (cloud) execution ─────────────────────────────────────────────
     use_remote: bool = False
@@ -60,6 +62,42 @@ class QoderCliConfig:
     plan_agent_for_decompose: bool = True
     """Use the built-in Plan agent when decomposing goals."""
 
+    wiki_path: str = ""
+    """Optional repo-relative path to ``qodercli wiki`` output (e.g. ``.qoder/repowiki/zh``).
+
+    When set and the metadata exists, a short architecture summary is
+    prepended to every prompt sent through :meth:`QoderCliAgent._heal_local`,
+    grounding feature-pipeline reasoning in project-specific context.
+    """
+
+    # ── Differentiated parameter injection (per-category) ───────────────────
+    reasoning_effort_by_category: Dict[str, str] = field(default_factory=dict)
+    """Per-category ``--reasoning-effort`` value (e.g. {'fix_issue': 'high'})."""
+
+    system_prompt_suffix: str = ""
+    """When non-empty, appended to qodercli system prompt via ``--append-system-prompt``."""
+
+    max_output_tokens_by_category: Dict[str, int] = field(default_factory=dict)
+    """Per-category ``--max-output-tokens`` value."""
+
+    agent_for_category: Dict[str, str] = field(default_factory=dict)
+    """Per-category ``--agent`` value (fallback when caller does not pass agent_name)."""
+
+    max_attachments: int = 3
+    """Maximum number of ``--attachment`` arguments injected from knowledge graph."""
+
+    # ── Harness feedforward guides ─────────────────────────────────────────
+    guides_dir: str = ""
+    """Directory containing harness guide ``.md`` files.
+
+    Resolved relative to the workspace passed to :meth:`heal`. Empty string
+    disables guide injection regardless of ``inject_guides_to_prompt``.
+    """
+
+    inject_guides_to_prompt: bool = False
+    """When ``True`` and ``guides_dir`` is set, append matching guides text
+    to ``--append-system-prompt``."""
+
 
 class QoderCliAgent(CodingAgent):
     """Default :class:`CodingAgent` implementation."""
@@ -72,6 +110,7 @@ class QoderCliAgent(CodingAgent):
                 binary=self.cfg.binary_path,
                 model=self.cfg.model,
                 extra_args=list(self.cfg.extra_args) or ["--yolo", "-q"],
+                permission_mode=self.cfg.permission_mode,
             )
 
     @property
@@ -103,7 +142,7 @@ class QoderCliAgent(CodingAgent):
         prompt: str,
         *,
         max_turns: int,
-        category: str,
+        category: str = "fix_issue",
         workspace: Path,
         env: Optional[Mapping[str, str]] = None,
         timeout_seconds: Optional[int] = None,
@@ -182,7 +221,7 @@ class QoderCliAgent(CodingAgent):
         prompt: str,
         *,
         max_turns: int,
-        category: str,
+        category: str = "fix_issue",
         workspace: Path,
         env: Optional[Mapping[str, str]] = None,
         timeout_seconds: Optional[int] = None,
@@ -209,16 +248,13 @@ class QoderCliAgent(CodingAgent):
                 duration_seconds=0.0,
             )
 
-        cmd = [
-            binary,
-            "-p", prompt,
-            *self.cfg.extra_args,
-            "--model", self.cfg.model,
-            "--max-turns", str(int(max_turns or self.cfg.max_turns_default)),
-            "-w", str(workspace),
-        ]
-        if agent_name:
-            cmd.extend(["--agent", agent_name])
+        cmd = self._build_cmd(
+            prompt,
+            workspace=workspace,
+            category=category,
+            max_turns=max_turns,
+            agent_name=agent_name,
+        )
 
         # Slot gating — never exceed the configured concurrent cap.
         if self.cfg.max_concurrent_processes > 0:
@@ -297,6 +333,84 @@ class QoderCliAgent(CodingAgent):
         )
 
     # ── helpers ─────────────────────────────────────────────────────────────
+    def _build_cmd(
+        self,
+        prompt: str,
+        *,
+        workspace: Path,
+        category: str,
+        max_turns: Optional[int] = None,
+        agent_name: Optional[str] = None,
+    ) -> list[str]:
+        """Build qodercli command line with per-category differentiated parameter injection."""
+        binary = self.cfg.binary_path
+        cmd = [
+            binary,
+            "-p", self._augment_prompt_with_knowledge(prompt, workspace),
+            *self.cfg.extra_args,
+            "--model", self.cfg.model,
+            "--max-turns", str(int(max_turns or self.cfg.max_turns_default)),
+            "--permission-mode", self.cfg.permission_mode,
+            "-w", str(workspace),
+        ]
+
+        # 1. reasoning-effort (per category)
+        effort_map = getattr(self.cfg, "reasoning_effort_by_category", {}) or {}
+        effort = effort_map.get(category)
+        if effort:
+            cmd.extend(["--reasoning-effort", effort])
+
+        # 2. append-system-prompt (config suffix + dynamic conventions + guides)
+        suffix = getattr(self.cfg, "system_prompt_suffix", "") or ""
+        conventions_suffix = self._get_conventions_suffix(workspace)
+        guides_suffix = self._get_guides_suffix(workspace, category)
+        suffix_parts = [s for s in (suffix, conventions_suffix, guides_suffix) if s]
+        if suffix_parts:
+            cmd.extend(["--append-system-prompt", "\n".join(suffix_parts)])
+
+        # 3. max-output-tokens (per category)
+        max_tokens_map = getattr(self.cfg, "max_output_tokens_by_category", {}) or {}
+        max_tokens = max_tokens_map.get(category)
+        if max_tokens:
+            cmd.extend(["--max-output-tokens", str(max_tokens)])
+
+        # 4. agent selection (per category, explicit caller wins)
+        agent_map = getattr(self.cfg, "agent_for_category", {}) or {}
+        effective_agent = agent_name or agent_map.get(category)
+        if effective_agent:
+            cmd.extend(["--agent", effective_agent])
+
+        # 5. attachments (recommended files from knowledge graph)
+        max_attachments = int(getattr(self.cfg, "max_attachments", 3) or 0)
+        if max_attachments > 0:
+            attachments = self._get_attachments(prompt, workspace)
+            for file_path in attachments[:max_attachments]:
+                cmd.extend(["--attachment", str(file_path)])
+
+        return cmd
+
+    def _get_attachments(self, prompt: str, workspace: Path) -> list[Path]:
+        """Get knowledge-graph-recommended files relevant to ``prompt`` as attachments.
+
+        Uses :meth:`KnowledgeContextProvider.recommend_files` (introduced in Task #85).
+        Returns an empty list when the method is unavailable or any error occurs.
+        """
+        try:
+            from vivify.knowledge.context_provider import (  # noqa: WPS433
+                KnowledgeContextProvider,
+            )
+            provider = KnowledgeContextProvider(workspace)
+            if getattr(provider, "graph", None) and hasattr(provider, "recommend_files"):
+                max_files = int(getattr(self.cfg, "max_attachments", 3) or 3)
+                return list(
+                    provider.recommend_files(
+                        prompt[:200], workspace, max_files=max_files
+                    )
+                )
+        except Exception:
+            pass
+        return []
+
     def _resolve_binary(self) -> Optional[str]:
         path = self.cfg.binary_path
         if os.path.isabs(path) and os.path.isfile(path) and os.access(path, os.X_OK):
@@ -311,6 +425,158 @@ class QoderCliAgent(CodingAgent):
         if extra:
             env.update({k: str(v) for k, v in extra.items()})
         return env
+
+    def _augment_prompt_with_knowledge(
+        self,
+        prompt: str,
+        workspace: Path,
+        feature_title: str = "",
+        feature_description: str = "",
+        issue_category: str = "",
+        issue_title: str = "",
+    ) -> str:
+        """Inject knowledge graph context into prompt.
+
+        Strategy:
+        1. Try targeted entity-level matching (get_targeted_context) first
+        2. If empty, fallback to module-level matching (get_context_for_feature)
+        3. Append historical experience if issue info is provided
+        4. Fallback to wiki when no knowledge graph exists
+
+        When ``feature_title`` / ``feature_description`` are not supplied,
+        the leading slice of ``prompt`` is used for relevance matching.
+        Any failure returns the original prompt unchanged.
+        """
+        try:
+            from vivify.knowledge.context_provider import (  # noqa: WPS433
+                KnowledgeContextProvider,
+                get_knowledge_context,
+            )
+        except Exception:  # pragma: no cover - defensive
+            return self._augment_prompt_with_wiki(prompt, workspace)
+
+        title = feature_title or (prompt[:200] if prompt else "")
+        description = feature_description
+
+        knowledge_block = ""
+        try:
+            provider = KnowledgeContextProvider(Path(workspace))
+            # Priority 1: Targeted entity-level matching
+            targeted = provider.get_targeted_context(title, description)
+            if targeted:
+                knowledge_block = targeted
+            else:
+                # Priority 2: Module-level matching (existing logic)
+                knowledge_block = get_knowledge_context(
+                    project_root=Path(workspace),
+                    feature_title=title,
+                    feature_description=description,
+                )
+
+            # Append historical experience if issue info provided
+            if issue_category and issue_title:
+                historical = self._get_historical_context(
+                    provider, issue_category, issue_title
+                )
+                if historical:
+                    knowledge_block = (
+                        f"{knowledge_block}\n\n{historical}"
+                        if knowledge_block
+                        else historical
+                    )
+        except Exception:  # pragma: no cover - defensive
+            knowledge_block = ""
+
+        if knowledge_block:
+            return f"{knowledge_block}\n\n---\n\n{prompt}"
+
+        # Fallback: legacy wiki injection when no knowledge graph exists.
+        return self._augment_prompt_with_wiki(prompt, workspace)
+
+    def _get_historical_context(
+        self,
+        provider,
+        category: str,
+        title: str,
+    ) -> str:
+        """Get historical context using storage if available."""
+        try:
+            storage = getattr(self, "storage", None)
+            if storage is None:
+                return ""
+            return provider.get_historical_context(category, title, storage)
+        except Exception:
+            return ""
+
+    def _get_conventions_suffix(self, workspace: Path) -> str:
+        """Get conventions text for --append-system-prompt from knowledge graph."""
+        try:
+            from vivify.knowledge.context_provider import (  # noqa: WPS433
+                KnowledgeContextProvider,
+            )
+            provider = KnowledgeContextProvider(Path(workspace))
+            return provider.get_conventions_for_system_prompt()
+        except Exception:
+            return ""
+
+    def _get_guides_suffix(self, workspace: Path, category: str) -> str:
+        """Return harness feedforward guides matching ``category``.
+
+        Returns an empty string when ``inject_guides_to_prompt`` is disabled,
+        ``guides_dir`` is empty, the directory does not exist, or no guides
+        match the category. Any failure is silently absorbed.
+        """
+        if not getattr(self.cfg, "inject_guides_to_prompt", False):
+            return ""
+        guides_dir_cfg = (getattr(self.cfg, "guides_dir", "") or "").strip()
+        if not guides_dir_cfg:
+            return ""
+        try:
+            from vivify.harness.guides import GuidesManager  # noqa: WPS433
+            guides_path = Path(guides_dir_cfg)
+            if not guides_path.is_absolute():
+                guides_path = Path(workspace) / guides_path
+            if not guides_path.exists():
+                return ""
+            return GuidesManager(guides_path).get_guides_for_category(category) or ""
+        except Exception:
+            return ""
+
+    def _augment_prompt_with_wiki(self, prompt: str, workspace: Path) -> str:
+        """Prepend a short project-architecture block when ``wiki_path`` is configured.
+
+        Failures (missing/unreadable metadata) are silently ignored: we
+        return the original prompt unchanged. Imported lazily so the
+        agent stays usable when the intelligence package is unavailable.
+        """
+        wiki_path = (self.cfg.wiki_path or "").strip()
+        if not wiki_path:
+            return prompt
+        try:
+            from vivify.intelligence.wiki_generator import (  # noqa: WPS433
+                load_wiki_context_if_available,
+            )
+        except Exception:  # pragma: no cover - defensive
+            return prompt
+        try:
+            ctx = load_wiki_context_if_available(
+                Path(workspace), wiki_dir=wiki_path,
+            )
+        except Exception:  # pragma: no cover - defensive
+            return prompt
+        if ctx is None or ctx.is_empty():
+            return prompt
+        block = ctx.to_prompt_block(
+            max_overview_chars=800,
+            max_source_files=15,
+            max_catalogs=10,
+        )
+        if not block:
+            return prompt
+        return (
+            "以下是项目架构上下文（由 qodercli wiki 生成），供你在开发时参考：\n\n"
+            f"{block}\n\n---\n\n{prompt}"
+        )
 
 
 def _filter_hooks(output: str) -> str:

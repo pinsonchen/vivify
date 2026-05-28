@@ -446,6 +446,151 @@ class SqliteStorageProvider(StorageProvider):
             for r in rows
         ]
 
+    # ── RCA reports ──
+    def save_rca_report(self, report) -> int:
+        """持久化 RCA 报告.
+
+        Args:
+            report: RcaReport 实例（来自 vivify.intelligence.models）
+        """
+        import json as _json
+        with self._guarded() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO rca_reports
+                    (issue_hash, recurrence_count, root_cause, pattern,
+                     suggested_strategy, related_issues, confidence, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    report.issue_hash,
+                    report.recurrence_count,
+                    report.root_cause,
+                    report.pattern,
+                    report.suggested_strategy,
+                    _json.dumps(report.related_issues, ensure_ascii=False),
+                    report.confidence,
+                    _to_iso(report.created_at) or _to_iso(datetime.now(timezone.utc)),
+                ),
+            )
+            rid = int(cur.lastrowid or 0)
+            return rid
+
+    def get_rca_reports(self, issue_hash: str, limit: int = 5) -> list[dict]:
+        """获取指定 issue hash 的已有 RCA 报告."""
+        with self._guarded() as conn:
+            rows = conn.execute(
+                "SELECT * FROM rca_reports WHERE issue_hash = ? ORDER BY id DESC LIMIT ?",
+                (issue_hash, int(limit)),
+            ).fetchall()
+        results = []
+        for r in rows:
+            results.append({
+                "id": int(r["id"]),
+                "issue_hash": r["issue_hash"],
+                "recurrence_count": int(r["recurrence_count"] or 0),
+                "root_cause": r["root_cause"] or "",
+                "pattern": r["pattern"] or "",
+                "suggested_strategy": r["suggested_strategy"] or "",
+                "related_issues": _safe_loads(r["related_issues"]).get("_raw", []) if not isinstance(_safe_loads(r["related_issues"]), list) else _safe_loads(r["related_issues"]),
+                "confidence": float(r["confidence"] or 0.5),
+                "created_at": r["created_at"],
+            })
+        return results
+
+    def get_failure_history(self, category: str, limit: int = 20) -> list[dict]:
+        """获取同类别的失败历史（含时间戳、标题、修复结果）."""
+        with self._guarded() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, run_id, action_type, status, category, level, title,
+                       result_summary, improved, duration_seconds, created_at
+                FROM action_logs
+                WHERE category = ? AND status = 'failed'
+                ORDER BY id DESC LIMIT ?
+                """,
+                (category, int(limit)),
+            ).fetchall()
+        return [
+            {
+                "id": int(r["id"]),
+                "action_type": r["action_type"],
+                "title": r["title"] or "",
+                "result_summary": r["result_summary"] or "",
+                "created_at": r["created_at"],
+            }
+            for r in rows
+        ]
+
+    # ── trend analysis queries ──
+    def read_action_logs_since(
+        self, since: datetime, action_types: list[str] | None = None, limit: int = 200
+    ) -> list["ActionLog"]:
+        """按时间范围 + action_type 过滤查询 action_logs."""
+        since_iso = _to_iso(since)
+        if action_types:
+            placeholders = ",".join("?" for _ in action_types)
+            sql = f"""
+                SELECT * FROM action_logs
+                WHERE created_at >= ? AND action_type IN ({placeholders})
+                ORDER BY created_at ASC LIMIT ?
+            """
+            params = (since_iso, *action_types, int(limit))
+        else:
+            sql = "SELECT * FROM action_logs WHERE created_at >= ? ORDER BY created_at ASC LIMIT ?"
+            params = (since_iso, int(limit))
+
+        with self._guarded() as conn:
+            rows = conn.execute(sql, params).fetchall()
+
+        out: list[ActionLog] = []
+        for r in rows:
+            out.append(
+                ActionLog(
+                    id=int(r["id"]),
+                    run_id=r["run_id"] or "",
+                    round_num=int(r["round_num"] or 0),
+                    action_type=r["action_type"] or "",
+                    status=r["status"] or "running",
+                    category=r["category"],
+                    level=r["level"],
+                    title=r["title"],
+                    prompt=r["prompt"],
+                    result_summary=r["result_summary"],
+                    improved=bool(r["improved"]),
+                    duration_seconds=r["duration_seconds"],
+                    details=_safe_loads(r["details_json"]),
+                    commit_hash=r["commit_hash"],
+                    pr_url=r["pr_url"],
+                    created_at=_from_iso(r["created_at"]) or datetime.now(timezone.utc),
+                )
+            )
+        return out
+
+    def get_kpi_time_series(self, kpi_name: str, since: datetime) -> list[tuple[datetime, float]]:
+        """获取单个 KPI 的时间序列数据.
+
+        从 kpi_snapshots 的 metrics_json 中提取指定 kpi_name 的值。
+        """
+        since_iso = _to_iso(since)
+        with self._guarded() as conn:
+            rows = conn.execute(
+                "SELECT metrics_json, captured_at FROM kpi_snapshots WHERE captured_at >= ? ORDER BY captured_at ASC",
+                (since_iso,),
+            ).fetchall()
+
+        series: list[tuple[datetime, float]] = []
+        for r in rows:
+            metrics = _safe_loads(r["metrics_json"])
+            if kpi_name in metrics:
+                try:
+                    value = float(metrics[kpi_name])
+                    ts = _from_iso(r["captured_at"]) or datetime.now(timezone.utc)
+                    series.append((ts, value))
+                except (ValueError, TypeError):
+                    continue
+        return series
+
     # ── internals ──
     def _guarded(self) -> "_GuardedConnection":
         if self._conn is None:

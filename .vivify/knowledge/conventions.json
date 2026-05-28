@@ -1,0 +1,26 @@
+[
+  {
+    "category": "naming",
+    "rule": "Use snake_case for function and method names",
+    "example": "def my_function():",
+    "language": "python"
+  },
+  {
+    "category": "naming",
+    "rule": "Use PascalCase for class names",
+    "example": "class MyClass:",
+    "language": "python"
+  },
+  {
+    "category": "imports",
+    "rule": "Prefer absolute imports over relative imports",
+    "example": "from vivify.kernel.loop import KernelLoop",
+    "language": "python"
+  },
+  {
+    "category": "testing",
+    "rule": "Tests are primarily in a separate tests/ directory",
+    "example": "tests/unit/test_<module>.py",
+    "language": "python"
+  }
+]
