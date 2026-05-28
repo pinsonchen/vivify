@@ -1,144 +1,310 @@
 # 复元·Vivify
 
-> 万物皆可自愈，系统由此新生。
+> **全场景系统自生长赋能引擎** — 挂载到任何 GitHub 项目，让它自己检测问题、自己修复、自己验证、自己学习。
 
-**全场景系统自生长赋能引擎** — The Universal Engine for System Evolution
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Status](https://img.shields.io/badge/Status-Alpha-orange.svg)]()
+[![Version](https://img.shields.io/badge/Version-0.1.0-lightgrey.svg)]()
 
 ---
 
-复元·Vivify 是一个自学习的智能扩展系统，可以挂载到任何 GitHub 项目。它作为系统的"第二大脑"与"生命源泉"，通过自主监控、自动修复和迭代开发来维持项目健康，让每一个系统都拥有进化的灵魂。
+## ✨ 核心理念
 
-## 核心理念
-
-在万物互联的数字宇宙中，每个长期项目都会逐渐"腐化"——测试腐化、依赖老化、代码债增长、目标遗失。传统的维护方式是"打补丁"，而我们选择"植入生命"。
-
-**外挂赋能三部曲：**
-
-1. **无感接入，即插即用** — 无论是陈旧的工业代码、脆弱的服务器集群，只需接入 Vivify，即可瞬间获得"生命体征"。
-2. **共生修复，固本培元** — 当系统遭遇故障，Vivify 作为强大的外部免疫系统介入，不仅快速修复损伤，更会反向优化底层逻辑。
-3. **自主生长，无限进化** — 接入后，系统能根据环境变化自主衍生新功能、新策略，实现从"被使用"到"自我进化"的跨越。
-
-## 工作原理
+**外挂赋能三部曲**：
 
 ```
-检测(Probes) → 直接修复(Fixers) → AI修复(CodingAgent) → 验证(Verifier) → 上报(Escalator)
+🔍 检测  →  🔧 修复  →  ✅ 验证学习
+Detect       Fix          Verify & Learn
 ```
 
-1. **检测** — 12+ 可插拔探针持续监控（CI 失败、漏洞、覆盖率、lint 债务、Issue 积压、文档过期、死代码、秘密泄露…）
-2. **修复** — 内置修复器安全处理可自动修复的问题（依赖更新、lint/format 自动修复、不稳定测试分流、陈旧分支清理…）
-3. **升级** — 无法自动修复的问题升级为需求（存储于 SQLite + 镜像到 GitHub Issues）
-4. **迭代** — 读取 `GOALS.md`，将每个目标分解为可执行的特性请求，通过 Qoder CLI 在隔离的 `git worktree` 中开发
-5. **落地** — 每个变更通过 Pull Request 提交，不直接推送 `main`
-6. **自生长** — AI 可优化自身的探针/修复器/提示词（在路径白名单约束下），系统越用越锋利
+- 🚫 **不侵入项目代码**：通过 PR 模式 + 隔离 Worktree 协作，所有变更可审、可回滚。
+- 🎯 **自动分解目标**：从一份 `GOALS.md` 出发，AI 拆解为可执行特性，跟踪到 KPI。
+- 📈 **持续改进**：每一次循环都会沉淀知识图谱、趋势数据、根因分析与防过度优化记忆。
 
-## 快速开始
+> 你不需要重写你的项目。你只需要让 Vivify 站在它旁边，长出来。
+
+---
+
+## 🏗️ 五层架构
+
+```mermaid
+graph TB
+    subgraph L5["🛡️ Verification Layer · Harness"]
+        V1[PEV 循环]
+        V2[Doom-loop 检测]
+        V3[风险评分]
+    end
+    subgraph L4["🤖 Development Layer"]
+        D1[Feature Pipeline]
+        D2[Qoder CLI Agent]
+        D3[PR Mode]
+    end
+    subgraph L3["🧠 Intelligence Layer"]
+        I1[RCA 根因分析]
+        I2[趋势分析 7d]
+        I3[Knowledge Graph]
+    end
+    subgraph L2["⚡ Fast-path Layer · Fixers"]
+        F1[6 个内置修复器]
+        F2[无需 AI 即可修复]
+    end
+    subgraph L1["🔭 Detection Layer · Probes"]
+        P1[13 个内置探针]
+        P2[YAML 声明式扩展]
+    end
+
+    L1 --> L2 --> L3 --> L4 --> L5
+    L5 -.学习反馈.-> L1
+```
+
+| 层 | 职责 | 关键能力 |
+|---|---|---|
+| **Detection** | 持续观测项目健康度 | 13 个探针，YAML 可扩展 |
+| **Fast-path** | 不调用 AI 的瞬时修复 | 6 个修复器，秒级闭环 |
+| **Intelligence** | 让系统"看懂"代码与历史 | RCA + 趋势 + 知识图谱 |
+| **Development** | 复杂修复与新功能开发 | Qoder CLI Agent + Worktree |
+| **Verification** | 验证而非声称 | PEV 三段验证 + 自纠正 |
+
+---
+
+## 🚀 快速开始
 
 ```bash
-pip install vivify-cli            # 或: pip install -e . (从源码)
-cd /path/to/your/repo
-vivify init                       # 交互式初始化
-vivify doctor                     # 验证环境 (git, gh, qodercli, GH_TOKEN)
-vivify run --once --dry-run       # 预览检测结果（不创建 PR）
-vivify run                        # 启动守护进程
-```
+# 1. 安装
+pip install vivify-cli
 
-## 一键安装
+# 2. 进入你的项目目录
+cd your-project
 
-**macOS / Linux / WSL：**
-```bash
-curl -fsSL https://raw.githubusercontent.com/pinsonchen/vivify/main/install.sh | sh
-```
+# 3. 交互式初始化（推荐 quick 模板，33 行配置即开即用）
+vivify init --template quick
 
-**Windows PowerShell：**
-```powershell
-irm https://raw.githubusercontent.com/pinsonchen/vivify/main/install.ps1 | iex
-```
-
-安装脚本会自动检测 Python 环境、安装 vivify-cli，并验证外部依赖。
-
-## 环境要求
-
-- Python ≥ 3.10
-- `git`、`gh` (GitHub CLI)、`qodercli` 在 `PATH` 中可用
-- `GH_TOKEN` 环境变量（或已执行 `gh auth login`）
-- GitHub 仓库已启用分支保护（推荐，用于 `auto_merge`）
-
-## 接入后的项目结构
-
-```
-.vivify.yml                   # 配置文件（提交；敏感信息走环境变量）
-GOALS.md                      # 项目目标与 KPI（提交）
-.vivify/
-├── state.db                  # SQLite — 特性池、日志、知识库（gitignored）
-├── logs/                     # 每日日志（gitignored）
-├── worktrees/                # AI 开发分支（gitignored）
-├── probes/                   # 自定义探针（.py / .yml）
-├── fixers/                   # 自定义修复器（.py）
-└── pr_template.md            # PR 正文模板
-```
-
-## 核心概念
-
-- **Probe** — 声明式(YAML)或编程式(Python)检测器，输出 `Issue`
-- **Fixer** — 无需 LLM 的快速修复路径（如 `ruff --fix`），直接发起 PR
-- **Issue** → 多轮未修复 → **FeatureRequest** → 评估 → worktree 开发 → PR → 验证 → 知识沉淀
-- **Goal**（`GOALS.md`）→ KPI → KPI 监控探针 → 降级告警 → 目标分解器 → 新特性请求
-- **Self-growth**：AI 可编辑 `vivify/probes/builtin/`、`vivify/fixers/builtin/`、提示模板，但内核修改需两人审批
-
-## CLI 命令
-
-```
-vivify init [--non-interactive] [--repo PATH] [--force]
-vivify run  [--once] [--dry-run] [--category CAT] [--interval N]
-vivify start [--extra-args ...]
-vivify stop  [--force]
-vivify status
-vivify list
+# 4. 环境健康检查
 vivify doctor
-vivify goals    show | add ... | decompose [--goal NAME] [--dry-run]
-vivify probes   list | test <id> | enable/disable <id>
-vivify fixers   list | test <id> --issue-file FILE
-vivify features list [--status S] | show <id> | retry <id>
-vivify logs     tail [-n N] [--follow]
+
+# 5. 单次试运行
+vivify run --once
+
+# 6. 启动守护进程，让它自己跑
+vivify run
 ```
 
-## 多实例 Daemon 管理
+### 环境要求
 
-Vivify 支持在不同项目目录下独立运行 daemon 实例，每个实例通过 PID 文件和文件锁实现隔离。
-
-```bash
-# 后台启动（当前目录绑定）
-vivify start
-
-# 查看状态
-vivify status
-
-# 列出本机所有运行中的实例
-vivify list
-
-# 停止
-vivify stop
-
-# 强制停止
-vivify stop --force
-```
-
-每个项目目录下只允许运行一个 vivify 实例。状态数据存储在 `.vivify/` 目录中，各实例完全隔离。
-
-## 配置
-
-参见 `.vivify.example.yml`。所有配置项可通过环境变量覆盖：`VIVIFY__<DOTTED_PATH>`（路径段用双下划线分隔）。
-
-## 状态
-
-Alpha (v0.1.0)。内核 + SQLite 存储 + Qoder CLI 代理 + PR 模式 + 12 个内置探针 + 7 个内置修复器 + 目标分解器已就绪。
-
-**路线图**：GitHub Actions Runner、Docker 镜像、多代理支持 (Claude Code/Codex)、Web 控制台。
-
-## 许可证
-
-MIT — 见 `LICENSE`。
+| 工具 | 版本 | 用途 |
+|---|---|---|
+| Python | ≥ 3.10 | 运行时 |
+| git | ≥ 2.30 | 版本控制 + Worktree |
+| [gh](https://cli.github.com/) | ≥ 2.0 | PR 创建与合并 |
+| [qodercli](https://qoder.com) | latest | AI Agent 引擎 |
 
 ---
 
-*复元·Vivify — 让每一个系统，都拥有进化的灵魂。*
+## 🧩 主要功能模块
+
+| 模块 | 功能描述 |
+|---|---|
+| 🛡️ **Harness** | PEV 循环验证（传感器 → 反馈 → 自纠正）+ Doom-loop 检测 + 风险评分 |
+| 🧠 **Knowledge** | 三阶段知识图谱（结构分析 → 语义丰富 → 规范提取），为 AI 提供精确上下文 |
+| 🔬 **Intelligence** | RCA 根因分析 + 7 天趋势分析 + 自动配置器 |
+| ⚙️ **Kernel** | 执行内核：探针检测 → 修复 → 特性流水线 → 健康监控 |
+| 🔭 **Probes** | 13 个声明式 YAML 探针 + 用户 Python 扩展 |
+| ⚡ **Fixers** | 6 个快速修复器（lint fix、dep bump 等）+ 用户扩展 |
+| 🌿 **PR Mode** | 隔离 Worktree + 自动 PR + 质量门禁 + 条件自动合并 |
+| 🎯 **Goals** | `GOALS.md` 解析 + AI 自动分解 + KPI 追踪 |
+| 📊 **Dashboard** | FastAPI Web 仪表盘，实时监控运行状态 |
+
+---
+
+## 🛠️ CLI 命令一览
+
+| 命令 | 作用 |
+|---|---|
+| `vivify init` | 交互式初始化项目配置（支持 `--template quick`） |
+| `vivify run` | 启动守护进程，进入主循环 |
+| `vivify run --once` | 单次执行一轮（调试 / CI 友好） |
+| `vivify start` / `stop` | 启停后台守护进程 |
+| `vivify status` | 查看当前状态与最近一轮结果 |
+| `vivify doctor` | 环境与配置健康检查 |
+| `vivify goals` | 列出 / 分解 / 追踪目标与 KPI |
+| `vivify probes` | 列出 / 测试探针 |
+| `vivify fixers` | 列出 / 测试修复器 |
+| `vivify features` | 查看特性流水线状态 |
+| `vivify logs` | 查看实时日志 |
+| `vivify dashboard` | 启动 Web 仪表盘 |
+| `vivify config show/validate/explain/diff` | 配置查看与诊断工具 |
+
+---
+
+## ⚙️ 配置系统
+
+### 双模板设计
+
+| 模板 | 行数 | 适用场景 |
+|---|---|---|
+| `quick` | 33 行 | 95% 项目可直接用，零认知负担 |
+| `full` | 95 行带注释 | 需要细粒度控制时使用 |
+
+### 高级配置分离
+
+```
+.vivify.yml          # 主配置（精简、人读）
+.vivify-advanced.yml # 高级配置（可选，自动合并）
+```
+
+### 10 个场景预设
+
+```yaml
+preset: web-fullstack   # 或 data-pipeline / microservice / cli-tool / library 等
+```
+
+### 环境变量覆盖
+
+```bash
+VIVIFY__KERNEL__INTERVAL=300 vivify run
+VIVIFY__PR_MODE__AUTO_MERGE=true vivify run
+```
+
+### 配置工具
+
+```bash
+vivify config show         # 当前生效配置
+vivify config validate     # 校验合法性
+vivify config explain      # 解释每一项来源（默认值/文件/环境变量）
+vivify config diff         # 与默认值对比
+```
+
+---
+
+## 🔌 扩展指南
+
+### 自定义探针 — YAML 声明式（推荐）
+
+```yaml
+# .vivify/probes/my_probe.yml
+id: my_probe
+name: 我的检查
+type: command
+command: "npm run lint"
+expect_exit_code: 0
+severity: warning
+```
+
+### 自定义探针 — Python 类
+
+```python
+# .vivify/probes/my_probe.py
+from vivify.interfaces.probe import Probe, ProbeResult
+
+class MyProbe(Probe):
+    id = "my_probe"
+    def run(self) -> ProbeResult:
+        # 你的检测逻辑
+        return ProbeResult(ok=True, message="all good")
+```
+
+### 自定义修复器
+
+```python
+# .vivify/fixers/my_fixer.py
+from vivify.interfaces.fixer import Fixer
+
+class MyFixer(Fixer):
+    handles = ["my_probe"]
+    def fix(self, ctx):
+        # 你的修复逻辑
+        ...
+```
+
+> 📁 自动发现路径：`.vivify/probes/` 和 `.vivify/fixers/`
+
+---
+
+## 🔄 工作原理（单轮流程）
+
+```mermaid
+graph LR
+    A[启动一轮] --> B[Probes 检测]
+    B --> C{发现问题?}
+    C -- 否 --> Z[休眠]
+    C -- 是 --> D{Fixer 可处理?}
+    D -- 是 --> E[Fast-path 修复]
+    D -- 否 --> F[Intelligence RCA]
+    F --> G[Feature Pipeline]
+    G --> H[Qoder CLI Agent]
+    H --> I[PR Mode<br/>隔离 Worktree]
+    E --> J[Harness PEV 验证]
+    I --> J
+    J --> K{通过?}
+    K -- 是 --> L[合并 PR + 学习]
+    K -- 否 --> M[Doom-loop 检测]
+    M --> A
+    L --> Z
+```
+
+---
+
+## 📂 项目结构
+
+```
+vivify/
+├── cli/            # 命令行入口（11+ 子命令）
+├── kernel/         # 主循环、特性流水线、健康监控
+├── probes/         # 探针注册与内置探针
+├── fixers/         # 修复器注册与内置修复器
+├── intelligence/   # RCA、趋势、AI 分析、Wiki 生成
+├── knowledge/      # 三阶段知识图谱构建
+├── harness/        # PEV 循环 + Doom-loop + 风险评分
+├── agents/         # Qoder CLI Agent + 历史 + Slot 管理
+├── pr_mode/        # Worktree + PR 创建/合并
+├── goals/          # GOALS.md 解析与分解
+├── dashboard/      # FastAPI Web 仪表盘
+├── config/         # 加载、校验、预设、模板
+├── deployers/      # 部署适配器（SSH / Webhook / Command）
+├── storage/        # SQLite 状态持久化
+└── verifier/       # 验证器接口
+```
+
+---
+
+## 🧪 开发
+
+```bash
+# 安装开发依赖
+pip install -e ".[dev]"
+
+# 运行单元测试
+pytest
+
+# 代码风格检查
+ruff check vivify/
+
+# 仅跑某个模块的测试
+pytest tests/unit/test_feature_pipeline.py -v
+```
+
+---
+
+## 🗺️ 路线图
+
+- ✅ 核心引擎（探针 / 修复器 / Agent / PR 模式）
+- ✅ 知识图谱系统（结构 + 语义 + 规范三阶段）
+- ✅ Harness PEV 循环 + 风险评分 + Doom-loop 检测
+- ✅ Init 配置优化（quick 模板 + 场景预设 + 高级分离）
+- 🚧 Web Dashboard 完善（实时日志流、特性看板）
+- 📋 多 Agent 支持（Claude Code、Codex）
+- 📋 GitHub Actions 原生集成
+- 📋 团队协作 / 多仓库视图
+
+---
+
+## 📄 License
+
+[MIT](LICENSE) © 复元·Vivify
+
+---
+
+<p align="center">
+  <em>不要重写你的项目，让它自己长出来。</em>
+</p>
