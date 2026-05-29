@@ -1,8 +1,8 @@
--- 0006_idea_table.sql — Ideas table: intermediate layer between Goal and FeatureRequest.
+-- 0005_idea_table.sql — Ideas table: intermediate layer between Goal and FeatureRequest.
 -- Idempotent: safe to re-run.
 
 CREATE TABLE IF NOT EXISTS _schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT);
-INSERT OR IGNORE INTO _schema_migrations (version, applied_at) VALUES (6, datetime('now'));
+INSERT OR IGNORE INTO _schema_migrations (version, applied_at) VALUES (5, datetime('now'));
 
 CREATE TABLE IF NOT EXISTS ideas (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

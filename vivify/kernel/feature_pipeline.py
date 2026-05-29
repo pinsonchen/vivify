@@ -31,6 +31,7 @@ from typing import Optional
 
 from vivify.agents.history import load_history
 from vivify.agents.prompts import builders, parsers
+from vivify.config.schema import AgentCostModel, FeaturePipelineConfig
 from vivify.interfaces.agent import CodingAgent
 from vivify.interfaces.storage import StorageProvider
 from vivify.kernel.feature_states import FeatureStateMachine, InvalidTransitionError
@@ -60,50 +61,7 @@ logger = logging.getLogger(__name__)
 # ────────────────────────────────────────────────────────────────────────────────
 
 
-@dataclass
-class AgentCostModel:
-    """按优先级分配 Agent 资源 (max_turns / timeout)."""
 
-    p0_max_turns: int = 100
-    p0_timeout: int = 7200    # 2 小时
-    p1_max_turns: int = 60
-    p1_timeout: int = 3600    # 1 小时
-    p2_max_turns: int = 30
-    p2_timeout: int = 1800    # 30 分钟
-    p3_max_turns: int = 15
-    p3_timeout: int = 900     # 15 分钟
-
-
-@dataclass
-class FeaturePipelineConfig:
-    max_turns_evaluate: int = 20
-    max_turns_develop: int = 100
-    max_turns_verify: int = 20
-    timeout_evaluate_seconds: int = 600
-    timeout_develop_seconds: int = 3600
-    timeout_verify_seconds: int = 600
-    quality_test_command: Optional[str] = None
-    quality_run_pytest: bool = False
-    repo_url: Optional[str] = None
-    max_followups: int = 3
-    # ── lifecycle timeouts (Task #61: stuck-feature auto-recovery) ─────────
-    evaluating_timeout_minutes: int = 10
-    developing_timeout_minutes: int = 90
-    verifying_timeout_minutes: int = 60
-    max_retries: int = 3
-    # ── Task #74: quality gate + auto revert ───────────────────────────────
-    max_verify_retries: int = 2        # 验证失败最大重试次数
-    auto_revert_enabled: bool = True   # 是否启用自动 revert
-    # ── Task #73: Agent cost model ────────────────────────────────────────
-    cost_model: AgentCostModel = field(default_factory=AgentCostModel)
-    # ── Task #119: data-driven verification ───────────────────────────────
-    data_driven_verification: bool = True
-    verification_thresholds: dict = field(default_factory=lambda: {
-        "min_quality_delta": -0.1,
-        "allow_test_regression": False,
-        "allow_lint_regression": True,
-        "confidence_threshold": 0.7,
-    })
 
 
 @dataclass

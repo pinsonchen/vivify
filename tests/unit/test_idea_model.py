@@ -235,9 +235,9 @@ class TestMigration:
         assert row is not None
 
     def test_schema_version_recorded(self, storage: SqliteStorageProvider):
-        """Migration version 6 should be recorded."""
+        """Migration version 5 should be recorded."""
         with storage._guarded() as conn:
             row = conn.execute(
-                "SELECT version FROM _schema_migrations WHERE version = 6"
+                "SELECT version FROM _schema_migrations WHERE version = 5"
             ).fetchone()
         assert row is not None

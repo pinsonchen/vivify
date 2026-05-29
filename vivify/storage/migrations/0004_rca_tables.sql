@@ -1,8 +1,8 @@
--- 0005_rca_tables.sql — RCA reports table for root-cause analysis.
+-- 0004_rca_tables.sql — RCA reports table for root-cause analysis.
 -- Idempotent: safe to re-run.
 
 CREATE TABLE IF NOT EXISTS _schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT);
-INSERT OR IGNORE INTO _schema_migrations (version, applied_at) VALUES (5, datetime('now'));
+INSERT OR IGNORE INTO _schema_migrations (version, applied_at) VALUES (4, datetime('now'));
 
 CREATE TABLE IF NOT EXISTS rca_reports (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

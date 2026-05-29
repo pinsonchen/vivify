@@ -5,7 +5,7 @@ sensible default so a freshly-initialised repo can run with an empty config.
 """
 from __future__ import annotations
 
-from typing import Dict, List, Literal
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -179,13 +179,34 @@ class FeaturePipelineConfig(BaseModel):
     ``retry_count`` reaches ``max_retries`` are auto-rejected.
     """
 
+    max_turns_evaluate: int = 20
+    max_turns_develop: int = 100
+    max_turns_verify: int = 20
+    timeout_evaluate_seconds: int = 600
+    timeout_develop_seconds: int = 3600
+    timeout_verify_seconds: int = 600
+    quality_test_command: Optional[str] = None
+    quality_run_pytest: bool = False
+    repo_url: Optional[str] = None
+    max_followups: int = 3
+    # ── lifecycle timeouts (Task #61: stuck-feature auto-recovery) ─────────
     evaluating_timeout_minutes: int = 10
     developing_timeout_minutes: int = 90
     verifying_timeout_minutes: int = 60
     max_retries: int = 3
+    # ── Task #74: quality gate + auto revert ───────────────────────
     max_verify_retries: int = 2        # 验证失败最大重试次数
     auto_revert_enabled: bool = True   # 是否启用自动 revert
+    # ── Task #73: Agent cost model ────────────────────────────────
     cost_model: AgentCostModel = Field(default_factory=AgentCostModel)
+    # ── Task #119: data-driven verification ───────────────────────
+    data_driven_verification: bool = True
+    verification_thresholds: Dict = Field(default_factory=lambda: {
+        "min_quality_delta": -0.1,
+        "allow_test_regression": False,
+        "allow_lint_regression": True,
+        "confidence_threshold": 0.7,
+    })
 
 
 class EscalationConfig(BaseModel):

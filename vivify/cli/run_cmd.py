@@ -169,15 +169,21 @@ def run(args: argparse.Namespace) -> int:
         per_probe_timeout_seconds=cfg.probes.per_probe_timeout_seconds,
         only_category=args.category,
         package_root=Path(__file__).resolve().parents[1],
+        state_dir=cfg.state_dir,
         enable_self_improve_prompt=cfg.self_growth.enabled,
         deploy=cfg.deploy,
         deploy_url=cfg.project.deploy_url,
         goals=cfg.goals,
         default_branch=cfg.pr.base_branch,
+        rules=list(cfg.rules) if getattr(cfg, "rules", None) else [],
         qodercli_binary=cfg.agent.qodercli.binary_path,
         wiki_path=getattr(cfg.project, "wiki_path", "") or "",
         intelligence=cfg.intelligence,
         harness=cfg.harness,
+        budget=cfg.budget,
+        capsules=cfg.capsules,
+        knowledge_gc=cfg.knowledge_gc,
+        reward=cfg.reward,
     )
 
     deps = KernelDeps(
