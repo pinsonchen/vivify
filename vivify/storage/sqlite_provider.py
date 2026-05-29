@@ -18,6 +18,7 @@ from typing import Any, Optional
 
 from vivify.interfaces.storage import StorageProvider
 from vivify.models.feature import FeatureRequest, FeatureStatus
+from vivify.models.idea import Idea
 from vivify.models.snapshot import ActionLog, KnowledgeEntry, KpiSnapshot
 
 logger = logging.getLogger(__name__)
@@ -618,6 +619,108 @@ class SqliteStorageProvider(StorageProvider):
         if self._conn is None:
             raise RuntimeError("SqliteStorageProvider.initialize() must be called first")
         return _GuardedConnection(self._conn, self._lock)
+
+    # ── ideas ──
+    def store_idea(self, idea: Idea) -> int:
+        with self._guarded() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO ideas (
+                    title, description, goal_id, status, priority,
+                    feasibility_score, estimated_effort,
+                    created_at, approved_at, completed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    idea.title, idea.description, idea.goal_id,
+                    idea.status, idea.priority,
+                    idea.feasibility_score, idea.estimated_effort,
+                    _to_iso(idea.created_at) or _to_iso(datetime.now(timezone.utc)),
+                    _to_iso(idea.approved_at),
+                    _to_iso(idea.completed_at),
+                ),
+            )
+            iid = int(cur.lastrowid or 0)
+            idea.id = iid
+            return iid
+
+    def get_idea(self, idea_id: int) -> Optional[Idea]:
+        with self._guarded() as conn:
+            row = conn.execute(
+                "SELECT * FROM ideas WHERE id = ?", (idea_id,)
+            ).fetchone()
+        return self._row_to_idea(row) if row else None
+
+    def get_ideas_by_status(self, status: str) -> list[Idea]:
+        with self._guarded() as conn:
+            rows = conn.execute(
+                "SELECT * FROM ideas WHERE status = ? ORDER BY priority DESC, id ASC",
+                (status,),
+            ).fetchall()
+        return [self._row_to_idea(r) for r in rows if r]
+
+    def get_ideas_by_goal(self, goal_id: int) -> list[Idea]:
+        with self._guarded() as conn:
+            rows = conn.execute(
+                "SELECT * FROM ideas WHERE goal_id = ? ORDER BY id ASC",
+                (goal_id,),
+            ).fetchall()
+        return [self._row_to_idea(r) for r in rows if r]
+
+    def update_idea_status(self, idea_id: int, status: str) -> None:
+        now_iso = _to_iso(datetime.now(timezone.utc))
+        fields: dict = {"status": status}
+        if status == "approved":
+            fields["approved_at"] = now_iso
+        elif status == "completed":
+            fields["completed_at"] = now_iso
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        values = list(fields.values()) + [idea_id]
+        with self._guarded() as conn:
+            conn.execute(
+                f"UPDATE ideas SET {sets} WHERE id = ?",
+                tuple(values),
+            )
+
+    def find_similar_idea(self, title: str) -> Optional[Idea]:
+        """Find an existing active Idea whose title is contained in *title* or vice versa."""
+        if not title or not title.strip():
+            return None
+        normalized = title.strip().lower()
+        with self._guarded() as conn:
+            rows = conn.execute(
+                "SELECT * FROM ideas WHERE status IN ('proposed', 'approved', 'decomposed') ORDER BY id ASC",
+            ).fetchall()
+        for row in rows:
+            existing_title = (row["title"] or "").strip().lower()
+            if not existing_title:
+                continue
+            # Bidirectional substring match
+            if existing_title in normalized or normalized in existing_title:
+                return self._row_to_idea(row)
+        return None
+
+    @staticmethod
+    def _row_to_idea(row: "sqlite3.Row") -> Idea:
+        def _opt(col: str, default=None):
+            try:
+                return row[col]
+            except (IndexError, KeyError):
+                return default
+
+        return Idea(
+            id=int(row["id"]),
+            title=row["title"] or "",
+            description=row["description"] or "",
+            goal_id=_opt("goal_id"),
+            status=row["status"] or "proposed",
+            priority=int(row["priority"] or 50),
+            feasibility_score=_opt("feasibility_score"),
+            estimated_effort=_opt("estimated_effort"),
+            created_at=_from_iso(row["created_at"]) or datetime.now(timezone.utc),
+            approved_at=_from_iso(_opt("approved_at")),
+            completed_at=_from_iso(_opt("completed_at")),
+        )
 
 
 class _GuardedConnection:

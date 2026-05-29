@@ -37,6 +37,7 @@ from vivify.kernel.feature_states import FeatureStateMachine, InvalidTransitionE
 from vivify.kernel.workspace_health import check_workspace_health
 from vivify.models.agent_result import AgentResult
 from vivify.models.feature import FeatureRequest
+from vivify.models.idea import Idea
 from vivify.models.snapshot import ActionLog, KnowledgeEntry
 from vivify.pr_mode.auto_merge import AutoMerge
 from vivify.pr_mode.auto_revert import AutoReverter
@@ -1033,6 +1034,10 @@ class FeaturePipeline:
             except Exception as e:  # pragma: no cover
                 logger.warning("update_feature(%s) failed: %s", feature.id, e)
 
+        # ── Task #115: auto-complete Idea when all child FRs are done ──
+        if new_status in ("verified", "deployed") and getattr(feature, "idea_id", None):
+            self._maybe_complete_idea(feature.idea_id)
+
     def _update_feature_status(
         self, feature: FeatureRequest, new_status: str, **extra_fields,
     ) -> None:
@@ -1054,6 +1059,24 @@ class FeaturePipeline:
             return  # 静默跳过非法转移（生产环境不中断）
 
         self._update(feature, status=new_status, **extra_fields)
+
+    # ── Task #115: Idea auto-completion ─────────────────────────────
+    def _maybe_complete_idea(self, idea_id: int) -> None:
+        """Check if all FRs under an Idea are completed; if so, mark Idea as completed."""
+        try:
+            features = self.storage.list_features(limit=500)
+            idea_features = [f for f in features if getattr(f, "idea_id", None) == idea_id]
+            if not idea_features:
+                return
+            terminal_statuses = ("verified", "deployed", "rejected")
+            all_done = all(f.status in terminal_statuses for f in idea_features)
+            if all_done:
+                self.storage.update_idea_status(idea_id, "completed")
+                logger.info("Idea #%d auto-completed: all %d FRs done", idea_id, len(idea_features))
+        except NotImplementedError:
+            pass  # storage backend doesn't support ideas yet
+        except Exception as e:  # pragma: no cover
+            logger.debug("_maybe_complete_idea(%d) failed: %s", idea_id, e)
 
     # ── Fix #69: pre-push change detection helper ─────────────────────────
     @staticmethod

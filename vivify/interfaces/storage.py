@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from vivify.models.feature import FeatureRequest, FeatureStatus
+from vivify.models.idea import Idea
 from vivify.models.snapshot import ActionLog, KnowledgeEntry, KpiSnapshot
 
 
@@ -94,3 +95,31 @@ class StorageProvider(ABC):
         empty list (backward-compatible no-op).
         """
         return []
+
+    # ── ideas ──
+    def store_idea(self, idea: Idea) -> int:
+        """Persist a new Idea and return its id."""
+        raise NotImplementedError
+
+    def get_idea(self, idea_id: int) -> Optional[Idea]:
+        """Retrieve an Idea by id."""
+        raise NotImplementedError
+
+    def get_ideas_by_status(self, status: str) -> list[Idea]:
+        """Return all Ideas with the given status."""
+        raise NotImplementedError
+
+    def get_ideas_by_goal(self, goal_id: int) -> list[Idea]:
+        """Return all Ideas associated with a goal."""
+        raise NotImplementedError
+
+    def update_idea_status(self, idea_id: int, status: str) -> None:
+        """Update an Idea's status (and set timestamps if appropriate)."""
+        raise NotImplementedError
+
+    def find_similar_idea(self, title: str) -> Optional[Idea]:
+        """Find an existing Idea with a similar title (substring match).
+
+        Used for deduplication when decomposing goals.
+        """
+        raise NotImplementedError

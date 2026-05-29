@@ -53,6 +53,7 @@ from vivify.kernel.failure_tracker import FailureTracker
 from vivify.kernel.feature_pipeline import FeaturePipeline, FeatureRunReport
 from vivify.kernel.health_monitor import HealthMonitor
 from vivify.models.feature import FeatureRequest, FeatureSpec
+from vivify.models.idea import Idea
 from vivify.models.issue import Issue
 from vivify.models.snapshot import ActionLog
 from vivify.pr_mode.auto_merge import AutoMerge
@@ -64,11 +65,12 @@ from vivify.probes.rule_engine import RuleEngine
 from vivify.probes.runner import ProbeRunReport, aggregate_issues, run_probes
 from vivify.daemon.lock import InstanceLock
 from vivify.daemon.manager import DaemonManager  # 仅用于全局实例注册表
-from vivify.config.schema import BudgetLimitConfig, CapsuleConfig, DaemonConfig, DeployConfig, GoalsConfig, HarnessConfig, IntelligenceConfig
+from vivify.config.schema import BudgetLimitConfig, CapsuleConfig, DaemonConfig, DeployConfig, GoalsConfig, HarnessConfig, IntelligenceConfig, KnowledgeGCConfig
 from vivify.kernel.token_budget import BudgetConfig, P53Suppressor, TokenBucket
 from vivify.deployers import DeployResult, get_deployer
 from vivify.intelligence.rca import RootCauseAnalyzer
 from vivify.intelligence.trend_analyzer import TrendAnalyzer
+from vivify.knowledge.gc import GCConfig, KnowledgeGC
 from vivify.knowledge.maintainer import KnowledgeMaintainer
 from vivify.verifier.kpi_snapshot import KpiSnapshotVerifier
 from vivify.capsules import CapsuleExtractor, CapsuleStore, SkillCapsule
@@ -106,6 +108,7 @@ class KernelConfig:
     harness: HarnessConfig = field(default_factory=HarnessConfig)
     budget: BudgetLimitConfig = field(default_factory=BudgetLimitConfig)
     capsules: CapsuleConfig = field(default_factory=CapsuleConfig)
+    knowledge_gc: KnowledgeGCConfig = field(default_factory=KnowledgeGCConfig)
 
 
 @dataclass
@@ -214,6 +217,29 @@ class Kernel:
         except Exception as e:  # pragma: no cover
             logger.debug("KnowledgeMaintainer init failed: %s", e)
             self._knowledge_maintainer = None
+
+        # ── 知识图谱 GC（垃圾回收） ─────────────────────────────────────────
+        self._knowledge_gc: Optional[KnowledgeGC] = None
+        self._last_gc_time: float = 0.0
+        try:
+            gc_cfg = self.config.knowledge_gc
+            if gc_cfg.enabled:
+                knowledge_dir = deps.repo_root / ".vivify" / "knowledge"
+                self._knowledge_gc = KnowledgeGC(
+                    config=GCConfig(
+                        max_nodes=gc_cfg.max_nodes,
+                        max_modules=gc_cfg.max_modules,
+                        stale_days=gc_cfg.stale_days,
+                        archive_after_days=gc_cfg.archive_after_days,
+                        delete_after_days=gc_cfg.delete_after_days,
+                        min_access_count=gc_cfg.min_access_count,
+                        gc_interval_hours=gc_cfg.gc_interval_hours,
+                    ),
+                    knowledge_dir=knowledge_dir,
+                )
+        except Exception as e:  # pragma: no cover
+            logger.debug("KnowledgeGC init failed: %s", e)
+            self._knowledge_gc = None
 
         # ── 智能分析（RCA + 趋势） ─────────────────────────────
         try:
@@ -651,6 +677,8 @@ class Kernel:
         try:
             # Knowledge graph incremental maintenance (rate-limited, non-blocking)
             self._maybe_update_knowledge()
+            # Knowledge GC (rate-limited, non-blocking)
+            self._maybe_run_knowledge_gc()
 
             issues, probe_reports = self._detect()
             report.issues_seen = len(issues)
@@ -729,6 +757,24 @@ class Kernel:
             self._knowledge_maintainer.maybe_update()
         except Exception as e:  # pragma: no cover
             logger.debug("Knowledge maintenance error: %s", e)
+
+    def _maybe_run_knowledge_gc(self) -> None:
+        """Run knowledge GC on configured interval. Never raises."""
+        if self._knowledge_gc is None:
+            return
+        now = time.time()
+        interval_seconds = max(1, self._knowledge_gc.config.gc_interval_hours) * 3600
+        if now - self._last_gc_time < interval_seconds:
+            return
+        self._last_gc_time = now
+        try:
+            report = self._knowledge_gc.run_gc()
+            if report.total_actions > 0:
+                logger.info("Knowledge GC: %s", report.summary)
+            else:
+                logger.debug("Knowledge GC: no actions needed")
+        except Exception as e:  # pragma: no cover
+            logger.debug("Knowledge GC error: %s", e)
 
     # ── stage 1: detect ────────────────────────────────────────────────────
     def _detect(self) -> tuple[list[Issue], list[ProbeRunReport]]:
@@ -1362,7 +1408,7 @@ class Kernel:
                 key = (spec.title or "").strip().lower()
                 if not key or key in existing_titles_lower:
                     continue
-                fid = self._store_feature_request(spec)
+                fid = self._store_feature_request(spec, goal_name=goal.name)
                 if fid:
                     existing_titles_lower.add(key)
                     total_created += 1
@@ -1398,13 +1444,36 @@ class Kernel:
             logger.debug("_build_health_context failed: %s", e)
             return ""
 
-    def _store_feature_request(self, spec: FeatureSpec) -> Optional[int]:
+    def _store_feature_request(self, spec: FeatureSpec, *, goal_name: str = "") -> Optional[int]:
         """将 FeatureSpec 写入 feature_requests 表，返回新 id 或 None。
 
         Task #111: 目标分解产生的子任务自动进入 approved 状态，
         跳过评估阶段直接进入开发。
+        Task #115: 先查找或创建 Idea，然后将 FR 关联到 Idea。
         """
         try:
+            # ── Idea deduplication + creation ─────────────────────
+            idea_id = getattr(spec, "idea_id", None)
+            if idea_id is None:
+                idea_title = spec.parent_goal or goal_name or spec.title
+                try:
+                    existing_idea = self.deps.storage.find_similar_idea(idea_title)
+                    if existing_idea:
+                        idea_id = existing_idea.id
+                    else:
+                        new_idea = Idea(
+                            title=idea_title[:200],
+                            description=spec.description[:500],
+                            goal_id=None,  # goal_id is text-based for now
+                            status="decomposed",
+                            priority=50,
+                        )
+                        idea_id = self.deps.storage.store_idea(new_idea)
+                except NotImplementedError:
+                    pass  # storage backend doesn't support ideas yet
+                except Exception as e:
+                    logger.debug("Idea creation/lookup failed: %s", e)
+
             fr = FeatureRequest(
                 title=spec.title,
                 description=spec.description,
@@ -1412,7 +1481,7 @@ class Kernel:
                 parent_goal=spec.parent_goal,
                 priority=spec.priority,
                 verification_method=spec.verification_method,
-                idea_id=getattr(spec, "idea_id", None),
+                idea_id=idea_id,
                 status="approved",  # auto-approve goal-decomposed features
             )
             return self.deps.storage.create_feature(fr)
