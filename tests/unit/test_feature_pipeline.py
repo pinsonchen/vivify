@@ -167,13 +167,16 @@ def test_evaluate_rejected_needs_admin_review(mock_build, mock_parse, pipeline):
 @patch("vivify.kernel.feature_pipeline.parsers.parse_commit_info")
 @patch("vivify.kernel.feature_pipeline.builders.build_feature_develop")
 @patch("vivify.kernel.feature_pipeline.load_history")
+@patch("vivify.kernel.feature_pipeline.FeaturePipeline._get_head_sha")
 @patch("vivify.kernel.feature_pipeline.FeaturePipeline._has_actual_changes")
 def test_develop_success_path(
-    mock_changes, mock_history, mock_build, mock_commit,
+    mock_changes, mock_head, mock_history, mock_build, mock_commit,
     mock_quality, mock_classify, pipeline, mock_pr_creator,
 ):
     """developing → deployed: full success path."""
     mock_changes.return_value = True
+    # Simulate a new commit produced by the agent (HEAD changed).
+    mock_head.side_effect = ["sha_before", "sha_after"]
     mock_history.return_value = []
     mock_build.return_value = "dev prompt"
     mock_commit.return_value = {"commit_hash": "abc123"}
@@ -192,8 +195,12 @@ def test_develop_success_path(
 @patch("vivify.kernel.feature_pipeline.run_quality_checks")
 @patch("vivify.kernel.feature_pipeline.builders.build_feature_develop")
 @patch("vivify.kernel.feature_pipeline.load_history")
-def test_develop_quality_failed(mock_history, mock_build, mock_quality, pipeline):
+@patch("vivify.kernel.feature_pipeline.FeaturePipeline._get_head_sha")
+def test_develop_quality_failed(
+    mock_head, mock_history, mock_build, mock_quality, pipeline,
+):
     """developing → deployed_with_issues: quality check fails."""
+    mock_head.side_effect = ["sha_before", "sha_after"]
     mock_history.return_value = []
     mock_build.return_value = "prompt"
     mock_quality.return_value = QualityCheckResult(passed=False, errors=["lint error"])
@@ -209,12 +216,15 @@ def test_develop_quality_failed(mock_history, mock_build, mock_quality, pipeline
 @patch("vivify.kernel.feature_pipeline.run_quality_checks")
 @patch("vivify.kernel.feature_pipeline.builders.build_feature_develop")
 @patch("vivify.kernel.feature_pipeline.load_history")
+@patch("vivify.kernel.feature_pipeline.FeaturePipeline._get_head_sha")
 @patch("vivify.kernel.feature_pipeline.FeaturePipeline._has_actual_changes")
 def test_develop_no_changes_rollback(
-    mock_changes, mock_history, mock_build, mock_quality, pipeline,
+    mock_changes, mock_head, mock_history, mock_build, mock_quality, pipeline,
 ):
-    """developing → approved: no actual changes detected → rollback."""
-    mock_changes.return_value = False
+    """developing → approved: no new commits this round → rollback."""
+    mock_changes.return_value = True  # historical commits may exist
+    # Same sha before/after → agent produced no new commits this round.
+    mock_head.side_effect = ["same_sha", "same_sha"]
     mock_history.return_value = []
     mock_build.return_value = "prompt"
     mock_quality.return_value = QualityCheckResult(passed=True)
@@ -228,17 +238,46 @@ def test_develop_no_changes_rollback(
     assert feature.retry_count == 1
 
 
+@patch("vivify.kernel.feature_pipeline.run_quality_checks")
+@patch("vivify.kernel.feature_pipeline.builders.build_feature_develop")
+@patch("vivify.kernel.feature_pipeline.load_history")
+@patch("vivify.kernel.feature_pipeline.FeaturePipeline._get_head_sha")
+@patch("vivify.kernel.feature_pipeline.FeaturePipeline._has_actual_changes")
+def test_develop_no_new_commits_escalates_after_max_retries(
+    mock_changes, mock_head, mock_history, mock_build, mock_quality, pipeline,
+):
+    """developing → deployed_with_issues when no-new-commit retries exhaust."""
+    mock_changes.return_value = True
+    mock_head.side_effect = ["same_sha", "same_sha"]
+    mock_history.return_value = []
+    mock_build.return_value = "prompt"
+    mock_quality.return_value = QualityCheckResult(passed=True)
+    # retry_count already at max_retries-1; this round bumps it to max.
+    feature = _make_feature(
+        status="approved", retry_count=pipeline.config.max_retries - 1,
+    )
+    report = FeatureRunReport(feature_id=1)
+
+    pipeline.develop(feature, report=report, round_num=1)
+
+    assert feature.status == "deployed_with_issues"
+    assert report.status == "deployed_with_issues"
+    assert feature.retry_count == pipeline.config.max_retries
+
+
 @patch("vivify.kernel.feature_pipeline.classify_worktree")
 @patch("vivify.kernel.feature_pipeline.run_quality_checks")
 @patch("vivify.kernel.feature_pipeline.builders.build_feature_develop")
 @patch("vivify.kernel.feature_pipeline.load_history")
+@patch("vivify.kernel.feature_pipeline.FeaturePipeline._get_head_sha")
 @patch("vivify.kernel.feature_pipeline.FeaturePipeline._has_actual_changes")
 def test_develop_pr_creation_fails(
-    mock_changes, mock_history, mock_build, mock_quality,
+    mock_changes, mock_head, mock_history, mock_build, mock_quality,
     mock_classify, pipeline, mock_pr_creator,
 ):
     """developing → deployed_with_issues: PR creation raises."""
     mock_changes.return_value = True
+    mock_head.side_effect = ["sha_before", "sha_after"]
     mock_history.return_value = []
     mock_build.return_value = "prompt"
     mock_quality.return_value = QualityCheckResult(passed=True)
@@ -284,6 +323,31 @@ def test_has_actual_changes_false_error(mock_run):
 def test_has_actual_changes_exception(mock_run):
     mock_run.side_effect = OSError("no git")
     assert FeaturePipeline._has_actual_changes("/tmp/wt", "origin/main") is False
+
+
+# ── _get_head_sha ───────────────────────────────────────────────
+
+
+@patch("subprocess.run")
+def test_get_head_sha_returns_sha(mock_run):
+    mock_run.return_value = subprocess.CompletedProcess(
+        args=[], returncode=0, stdout="abc123def456\n",
+    )
+    assert FeaturePipeline._get_head_sha("/tmp/wt") == "abc123def456"
+
+
+@patch("subprocess.run")
+def test_get_head_sha_returns_empty_on_error(mock_run):
+    mock_run.return_value = subprocess.CompletedProcess(
+        args=[], returncode=128, stdout="",
+    )
+    assert FeaturePipeline._get_head_sha("/tmp/wt") == ""
+
+
+@patch("subprocess.run")
+def test_get_head_sha_returns_empty_on_exception(mock_run):
+    mock_run.side_effect = OSError("no git")
+    assert FeaturePipeline._get_head_sha("/tmp/wt") == ""
 
 
 # ── _detect_and_recover_timeouts ──────────────────────────────────────────────

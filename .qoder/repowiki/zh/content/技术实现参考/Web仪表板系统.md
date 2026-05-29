@@ -15,10 +15,15 @@
 - [vivify/storage/migrations/0001_init.sql](file://vivify/storage/migrations/0001_init.sql)
 - [vivify/storage/migrations/0002_add_verification_method.sql](file://vivify/storage/migrations/0002_add_verification_method.sql)
 - [vivify/storage/migrations/0003_enhance_feature_model.sql](file://vivify/storage/migrations/0003_enhance_feature_model.sql)
+- [vivify/storage/migrations/0004_rca_tables.sql](file://vivify/storage/migrations/0004_rca_tables.sql)
+- [vivify/storage/migrations/0005_idea_table.sql](file://vivify/storage/migrations/0005_idea_table.sql)
 - [vivify/models/feature.py](file://vivify/models/feature.py)
 - [vivify/models/snapshot.py](file://vivify/models/snapshot.py)
+- [vivify/models/idea.py](file://vivify/models/idea.py)
 - [vivify/config/loader.py](file://vivify/config/loader.py)
 - [vivify/kernel/health_monitor.py](file://vivify/kernel/health_monitor.py)
+- [vivify/kernel/loop.py](file://vivify/kernel/loop.py)
+- [vivify/intelligence/rca.py](file://vivify/intelligence/rca.py)
 - [vivify/probes/builtin/site_health.yml](file://vivify/probes/builtin/site_health.yml)
 - [vivify/goals/decomposer.py](file://vivify/goals/decomposer.py)
 - [vivify/kernel/feature_pipeline.py](file://vivify/kernel/feature_pipeline.py)
@@ -35,6 +40,8 @@
 - 前端JavaScript更新：160多行代码增强特性统计、侧边栏交互和生命周期可视化
 - CSS样式更新：139行样式支持徽章系统、状态高亮、警告动画和侧边栏布局
 - 新增特性详情侧边栏，支持生命周期进度条、图片缩略图、验证结果展示
+- **数据库架构更新**：新增 RCA 报告表和 ideas 表，支持根因分析和想法管理功能
+- **迁移编号修正**：0005_rca_tables.sql 重命名为 0004_rca_tables.sql，0006_idea_table.sql 重命名为 0005_idea_table.sql
 
 ## 目录
 1. [简介](#简介)
@@ -46,13 +53,14 @@
 7. [配置健康监控系统](#配置健康监控系统)
 8. [多实例管理功能](#多实例管理功能)
 9. [数据库迁移与存储更新](#数据库迁移与存储更新)
-10. [依赖关系分析](#依赖关系分析)
-11. [性能考虑](#性能考虑)
-12. [故障排除指南](#故障排除指南)
-13. [结论](#结论)
+10. [根因分析与想法管理系统](#根因分析与想法管理系统)
+11. [依赖关系分析](#依赖关系分析)
+12. [性能考虑](#性能考虑)
+13. [故障排除指南](#故障排除指南)
+14. [结论](#结论)
 
 ## 简介
-本项目是一个基于 FastAPI 的 Web 仪表板系统，用于可视化 Vivify 自愈引擎的状态、历史动作、特性开发进度、KPI 趋势以及实时日志流。该系统通过只读 SQLite 数据库连接提供数据查询能力，并以静态资源的形式提供前端界面。**重大更新**：现已支持配置健康监控系统，提供项目配置完整性检查、实时健康状态监控和智能修复建议，大幅增强了系统的实用性和维护性。**统计端点增强**：新增 /api/features/stats 端点和配套UI功能，提供特性统计分析、生命周期跟踪和交互式详情展示。**数据库迁移更新**：新增 verification_method 列支持特征验证方法定义，为特征验证流程提供结构化支持。**数据库迁移架构更新**：新增 migration 0003 生命周期跟踪字段支持，包括 image_urls、idea_id、retry_count、batch_commit_hash、verification_result 及时间戳字段的数据库支持和向后兼容性设计。
+本项目是一个基于 FastAPI 的 Web 仪表板系统，用于可视化 Vivify 自愈引擎的状态、历史动作、特性开发进度、KPI 趋势以及实时日志流。该系统通过只读 SQLite 数据库连接提供数据查询能力，并以静态资源的形式提供前端界面。**重大更新**：现已支持配置健康监控系统，提供项目配置完整性检查、实时健康状态监控和智能修复建议，大幅增强了系统的实用性和维护性。**统计端点增强**：新增 /api/features/stats 端点和配套UI功能，提供特性统计分析、生命周期跟踪和交互式详情展示。**数据库迁移更新**：新增 verification_method 列支持特征验证方法定义，为特征验证流程提供结构化支持。**数据库迁移架构更新**：新增 migration 0003 生命周期跟踪字段支持，包括 image_urls、idea_id、retry_count、batch_commit_hash、verification_result 及时间戳字段的数据库支持和向后兼容性设计。**新增数据库功能**：新增 RCA 报告表和 ideas 表，支持根因分析和想法管理，进一步完善了系统的智能化监控能力。
 
 ## 项目结构
 该项目采用模块化组织方式，主要分为以下几部分：
@@ -63,6 +71,8 @@
 - 存储与模型定义
 - 配置与构建信息
 - 健康监控内核
+- **根因分析系统**：支持重复问题的根因分析和修复策略建议
+- **想法管理系统**：支持目标到特性的中间层想法管理
 
 ```mermaid
 graph TB
@@ -76,6 +86,8 @@ Dash_App["dashboard/app.py<br/>统计端点 + 配置健康监控"]
 Dash_DB["dashboard/db.py<br/>统计查询 + 特性详情"]
 Log_Streamer["dashboard/log_streamer.py"]
 Health_Monitor["kernel/health_monitor.py<br/>KPI健康监控"]
+RCA_System["intelligence/rca.py<br/>根因分析 + 修复策略"]
+Idea_Manager["models/idea.py<br/>想法管理 + 生命周期"]
 end
 subgraph "前端资源"
 Index_HTML["static/index.html<br/>多实例界面 + 统计分析 + 侧边栏"]
@@ -88,6 +100,8 @@ SQLite_Provider["storage/sqlite_provider.py"]
 Schema_SQL["storage/migrations/0001_init.sql"]
 Verification_Migration["storage/migrations/0002_add_verification_method.sql<br/>新增verification_method列"]
 Lifecycle_Migration["storage/migrations/0003_enhance_feature_model.sql<br/>新增生命周期跟踪字段"]
+RCA_Migration["storage/migrations/0004_rca_tables.sql<br/>新增RCA报告表"]
+Idea_Migration["storage/migrations/0005_idea_table.sql<br/>新增ideas表"]
 Feature_Model["models/feature.py"]
 Snapshot_Model["models/snapshot.py"]
 end
@@ -105,16 +119,17 @@ CLI_Dashboard --> Dash_App
 Dash_App --> Dash_DB
 Dash_App --> Log_Streamer
 Dash_App --> Health_Monitor
-Dash_App --> Instance_Registry
-Dash_App --> Index_HTML
-Index_HTML --> Style_CSS
-Index_HTML --> App_JS
+Dash_App --> RCA_System
+Dash_App --> Idea_Manager
 Dash_DB --> SQLite_Provider
 SQLite_Provider --> Schema_SQL
 SQLite_Provider --> Verification_Migration
 SQLite_Provider --> Lifecycle_Migration
+SQLite_Provider --> RCA_Migration
+SQLite_Provider --> Idea_Migration
 Feature_Model --> SQLite_Provider
 Snapshot_Model --> SQLite_Provider
+Idea_Manager --> SQLite_Provider
 Goal_Decomposer --> Feature_Model
 Feature_Pipeline --> Feature_Model
 Feature_Pipeline --> Verify_Template
@@ -135,10 +150,14 @@ Feature_Pipeline --> Verify_Parser
 - [vivify/storage/migrations/0001_init.sql:1-100](file://vivify/storage/migrations/0001_init.sql#L1-L100)
 - [vivify/storage/migrations/0002_add_verification_method.sql:1-7](file://vivify/storage/migrations/0002_add_verification_method.sql#L1-L7)
 - [vivify/storage/migrations/0003_enhance_feature_model.sql:1-19](file://vivify/storage/migrations/0003_enhance_feature_model.sql#L1-L19)
+- [vivify/storage/migrations/0004_rca_tables.sql:1-20](file://vivify/storage/migrations/0004_rca_tables.sql#L1-L20)
+- [vivify/storage/migrations/0005_idea_table.sql:1-23](file://vivify/storage/migrations/0005_idea_table.sql#L1-L23)
 - [vivify/models/feature.py:1-101](file://vivify/models/feature.py#L1-L101)
 - [vivify/models/snapshot.py:1-48](file://vivify/models/snapshot.py#L1-L48)
+- [vivify/models/idea.py:1-38](file://vivify/models/idea.py#L1-L38)
 - [vivify/config/loader.py:1-78](file://vivify/config/loader.py#L1-L78)
 - [vivify/kernel/health_monitor.py:1-141](file://vivify/kernel/health_monitor.py#L1-L141)
+- [vivify/intelligence/rca.py:40-142](file://vivify/intelligence/rca.py#L40-L142)
 - [vivify/probes/builtin/site_health.yml:1-52](file://vivify/probes/builtin/site_health.yml#L1-L52)
 - [vivify/goals/decomposer.py:58-77](file://vivify/goals/decomposer.py#L58-L77)
 - [vivify/kernel/feature_pipeline.py:175-338](file://vivify/kernel/feature_pipeline.py#L175-L338)
@@ -159,8 +178,11 @@ Feature_Pipeline --> Verify_Parser
 - [vivify/storage/migrations/0001_init.sql:1-100](file://vivify/storage/migrations/0001_init.sql#L1-L100)
 - [vivify/storage/migrations/0002_add_verification_method.sql:1-7](file://vivify/storage/migrations/0002_add_verification_method.sql#L1-L7)
 - [vivify/storage/migrations/0003_enhance_feature_model.sql:1-19](file://vivify/storage/migrations/0003_enhance_feature_model.sql#L1-L19)
+- [vivify/storage/migrations/0004_rca_tables.sql:1-20](file://vivify/storage/migrations/0004_rca_tables.sql#L1-L20)
+- [vivify/storage/migrations/0005_idea_table.sql:1-23](file://vivify/storage/migrations/0005_idea_table.sql#L1-L23)
 - [vivify/models/feature.py:1-101](file://vivify/models/feature.py#L1-L101)
 - [vivify/models/snapshot.py:1-48](file://vivify/models/snapshot.py#L1-L48)
+- [vivify/models/idea.py:1-38](file://vivify/models/idea.py#L1-L38)
 - [vivify/config/loader.py:1-78](file://vivify/config/loader.py#L1-L78)
 
 ## 核心组件
@@ -177,6 +199,8 @@ Feature_Pipeline --> Verify_Parser
 - **生命周期跟踪系统**：支持特征的完整生命周期跟踪，包括重试次数、批量提交、验证结果和时间戳
 - **统计分析系统**：提供特性类型/优先级/状态分布统计和重试计数分析
 - **交互式详情系统**：支持特性详情侧边栏，展示生命周期进度、图片缩略图和验证结果
+- **根因分析系统**：支持重复问题的根因分析，提供修复策略建议和历史模式检测
+- **想法管理系统**：支持目标到特性的中间层想法管理，提供想法的生命周期跟踪和状态管理
 
 **章节来源**
 - [vivify/cli/main.py:1-58](file://vivify/cli/main.py#L1-L58)
@@ -187,9 +211,11 @@ Feature_Pipeline --> Verify_Parser
 - [vivify/storage/sqlite_provider.py:1-629](file://vivify/storage/sqlite_provider.py#L1-L629)
 - [vivify/kernel/health_monitor.py:1-141](file://vivify/kernel/health_monitor.py#L1-L141)
 - [vivify/probes/builtin/site_health.yml:1-52](file://vivify/probes/builtin/site_health.yml#L1-L52)
+- [vivify/intelligence/rca.py:40-142](file://vivify/intelligence/rca.py#L40-L142)
+- [vivify/models/idea.py:1-38](file://vivify/models/idea.py#L1-L38)
 
 ## 架构总览
-系统采用分层架构设计，各层职责清晰分离，现已增强多实例支持能力、配置健康监控功能和统计分析能力：
+系统采用分层架构设计，各层职责清晰分离，现已增强多实例支持能力、配置健康监控功能、统计分析能力和智能化根因分析功能：
 
 ```mermaid
 graph TB
@@ -202,6 +228,8 @@ Commands["CLI 命令<br/>dashboard_cmd.py"]
 HealthKernel["健康监控内核<br/>KPI回归检测 + 自动化优化"]
 Probes["探针系统<br/>站点健康监控 + 其他监控探针"]
 Statistics["统计分析引擎<br/>特性分布统计 + 生命周期跟踪"]
+RCA_System["根因分析系统<br/>重复问题分析 + 修复策略建议"]
+IdeaManager["想法管理系统<br/>目标到特性中间层管理"]
 end
 subgraph "服务层"
 DBLayer["数据库访问层<br/>DashboardDB + 统计查询"]
@@ -212,12 +240,14 @@ FeaturePipeline["特征流水线<br/>特征分解 + 验证方法处理 + 生命�
 end
 subgraph "数据层"
 SQLiteDB["SQLite 数据库<br/>state.db"]
-Schema["数据库模式<br/>0001_init.sql + 0002_add_verification_method.sql + 0003_enhance_feature_model.sql"]
+Schema["数据库模式<br/>0001_init.sql + 0002_add_verification_method.sql + 0003_enhance_feature_model.sql + 0004_rca_tables.sql + 0005_idea_table.sql"]
 InstanceRegistry["实例注册表<br/>~/.vivify/instances.json"]
 ConfigFile["配置文件<br/>.vivify.yml + 环境变量"]
 GoalSpecs["目标规范<br/>GOALS.md + 特征规范"]
 VerifyTemplate["验证模板<br/>feature_verify.md.j2"]
 VerifyParser["验证结果解析<br/>parse_verification_result"]
+RCAReports["RCA报告<br/>根因分析 + 修复策略"]
+Ideas["想法<br/>目标到特性中间层"]
 End_Time_Stamp["时间戳字段<br/>evaluated_at/started_at/verified_at/completed_at"]
 Retry_Count["重试计数<br/>retry_count"]
 Batch_Hash["批量提交哈希<br/>batch_commit_hash"]
@@ -232,11 +262,15 @@ API --> InstanceMgr
 API --> HealthKernel
 API --> ConfigHealth
 API --> Statistics
+API --> RCA_System
+API --> IdeaManager
 API --> Probes
 DBLayer --> Storage
 Storage --> SQLiteDB
 Storage --> Verification_Migration
 Storage --> Lifecycle_Migration
+Storage --> RCA_Migration
+Storage --> Idea_Migration
 InstanceMgr --> InstanceRegistry
 ConfigHealth --> ConfigFile
 HealthKernel --> Storage
@@ -250,6 +284,8 @@ FeaturePipeline --> Verification_Result
 FeaturePipeline --> Idea_ID
 FeaturePipeline --> Image_URLs
 FeaturePipeline --> End_Time_Stamp
+RCA_System --> RCAReports
+IdeaManager --> Ideas
 SQLiteDB --> Schema
 ```
 
@@ -260,8 +296,11 @@ SQLiteDB --> Schema
 - [vivify/storage/migrations/0001_init.sql:1-100](file://vivify/storage/migrations/0001_init.sql#L1-L100)
 - [vivify/storage/migrations/0002_add_verification_method.sql:1-7](file://vivify/storage/migrations/0002_add_verification_method.sql#L1-L7)
 - [vivify/storage/migrations/0003_enhance_feature_model.sql:1-19](file://vivify/storage/migrations/0003_enhance_feature_model.sql#L1-L19)
+- [vivify/storage/migrations/0004_rca_tables.sql:1-20](file://vivify/storage/migrations/0004_rca_tables.sql#L1-L20)
+- [vivify/storage/migrations/0005_idea_table.sql:1-23](file://vivify/storage/migrations/0005_idea_table.sql#L1-L23)
 - [vivify/kernel/health_monitor.py:92-141](file://vivify/kernel/health_monitor.py#L92-L141)
 - [vivify/probes/builtin/site_health.yml:1-52](file://vivify/probes/builtin/site_health.yml#L1-L52)
+- [vivify/intelligence/rca.py:40-142](file://vivify/intelligence/rca.py#L40-L142)
 
 ## 详细组件分析
 
@@ -453,7 +492,7 @@ SidebarBody --> VerificationResult["验证结果展示"]
 - [vivify/dashboard/static/app.js:675-770](file://vivify/dashboard/static/app.js#L675-L770)
 
 ### 数据模型与存储
-系统使用 SQLite 作为数据存储后端，支持复杂的数据查询和分析。**更新**：新增 verification_method 列支持特征验证方法定义。**更新**：新增生命周期跟踪字段支持，包括 image_urls、idea_id、retry_count、batch_commit_hash、verification_result 及时间戳字段。**新增**：统计查询功能支持特性分布分析和重试计数统计。
+系统使用 SQLite 作为数据存储后端，支持复杂的数据查询和分析。**更新**：新增 verification_method 列支持特征验证方法定义。**更新**：新增生命周期跟踪字段支持，包括 image_urls、idea_id、retry_count、batch_commit_hash、verification_result 及时间戳字段。**新增**：统计查询功能支持特性分布分析和重试计数统计。**新增**：RCA 报告表支持根因分析结果的持久化存储。**新增**：ideas 表支持目标到特性的中间层想法管理。
 
 ```mermaid
 erDiagram
@@ -535,16 +574,45 @@ text stat_value
 text stat_metadata
 text captured_at
 }
+RCA_REPORTS {
+integer id PK
+text issue_hash
+integer recurrence_count
+text root_cause
+text pattern
+text suggested_strategy
+text related_issues
+real confidence
+text created_at
+}
+IDEAS {
+integer id PK
+text title
+text description
+integer goal_id
+text status
+integer priority
+real feasibility_score
+text estimated_effort
+text created_at
+text approved_at
+text completed_at
+}
 FEATURE_REQUESTS ||--o{ ACTION_LOGS : "关联"
 FEATURE_REQUESTS ||--o{ KNOWLEDGE_ENTRIES : "关联"
+FEATURE_REQUESTS ||--o{ RCA_REPORTS : "关联"
+IDEAS ||--o{ FEATURE_REQUESTS : "分解为"
 ```
 
 **图表来源**
 - [vivify/storage/migrations/0001_init.sql:9-27](file://vivify/storage/migrations/0001_init.sql#L9-L27)
 - [vivify/storage/migrations/0002_add_verification_method.sql:4](file://vivify/storage/migrations/0002_add_verification_method.sql#L4)
 - [vivify/storage/migrations/0003_enhance_feature_model.sql:5-13](file://vivify/storage/migrations/0003_enhance_feature_model.sql#L5-L13)
+- [vivify/storage/migrations/0004_rca_tables.sql:7-17](file://vivify/storage/migrations/0004_rca_tables.sql#L7-L17)
+- [vivify/storage/migrations/0005_idea_table.sql:7-19](file://vivify/storage/migrations/0005_idea_table.sql#L7-L19)
 - [vivify/models/feature.py:70-101](file://vivify/models/feature.py#L70-L101)
 - [vivify/models/snapshot.py:9-48](file://vivify/models/snapshot.py#L9-L48)
+- [vivify/models/idea.py:22-38](file://vivify/models/idea.py#L22-L38)
 
 **章节来源**
 - [vivify/dashboard/app.py:1-845](file://vivify/dashboard/app.py#L1-L845)
@@ -555,8 +623,11 @@ FEATURE_REQUESTS ||--o{ KNOWLEDGE_ENTRIES : "关联"
 - [vivify/storage/migrations/0001_init.sql:1-100](file://vivify/storage/migrations/0001_init.sql#L1-L100)
 - [vivify/storage/migrations/0002_add_verification_method.sql:1-7](file://vivify/storage/migrations/0002_add_verification_method.sql#L1-L7)
 - [vivify/storage/migrations/0003_enhance_feature_model.sql:1-19](file://vivify/storage/migrations/0003_enhance_feature_model.sql#L1-L19)
+- [vivify/storage/migrations/0004_rca_tables.sql:1-20](file://vivify/storage/migrations/0004_rca_tables.sql#L1-L20)
+- [vivify/storage/migrations/0005_idea_table.sql:1-23](file://vivify/storage/migrations/0005_idea_table.sql#L1-L23)
 - [vivify/models/feature.py:1-101](file://vivify/models/feature.py#L1-L101)
 - [vivify/models/snapshot.py:1-48](file://vivify/models/snapshot.py#L1-L48)
+- [vivify/models/idea.py:1-38](file://vivify/models/idea.py#L1-L38)
 
 ## 统计端点与UI增强
 
@@ -983,16 +1054,19 @@ Goals --> DeployURL
 ## 数据库迁移与存储更新
 
 ### 数据库迁移架构
-系统采用版本化的数据库迁移策略，确保数据库结构的演进和向后兼容性。**更新**：新增 verification_method 列支持特征验证方法定义。**更新**：新增 migration 0003 生命周期跟踪字段支持，包括 image_urls、idea_id、retry_count、batch_commit_hash、verification_result 及时间戳字段的数据库支持和向后兼容性设计。**新增**：统计查询功能支持特性分布分析和重试计数统计。
+系统采用版本化的数据库迁移策略，确保数据库结构的演进和向后兼容性。**更新**：新增 verification_method 列支持特征验证方法定义。**更新**：新增 migration 0003 生命周期跟踪字段支持，包括 image_urls、idea_id、retry_count、batch_commit_hash、verification_result 及时间戳字段的数据库支持和向后兼容性设计。**新增**：统计查询功能支持特性分布分析和重试计数统计。**新增**：RCA 报告表支持根因分析结果的持久化存储。**新增**：ideas 表支持目标到特性的中间层想法管理。
 
 ```mermaid
 flowchart TD
 Migration1["0001_init.sql<br/>初始数据库结构"] --> Migration2["0002_add_verification_method.sql<br/>新增verification_method列"]
 Migration2 --> Migration3["0003_enhance_feature_model.sql<br/>新增生命周期跟踪字段"]
-Migration3 --> SchemaMigrations["_schema_migrations<br/>版本跟踪表"]
+Migration3 --> Migration4["0004_rca_tables.sql<br/>新增RCA报告表"]
+Migration4 --> Migration5["0005_idea_table.sql<br/>新增ideas表"]
 Migration1 --> FeatureRequests["feature_requests<br/>基础表结构"]
 Migration2 --> FeatureRequests
 Migration3 --> FeatureRequests
+Migration4 --> RCAReports["rca_reports<br/>根因分析表"]
+Migration5 --> Ideas["ideas<br/>想法表"]
 FeatureRequests --> VerificationMethod["verification_method<br/>TEXT列，可为空"]
 FeatureRequests --> ImageUrls["image_urls<br/>JSON数组URL，可为空"]
 FeatureRequests --> IdeaId["idea_id<br/>INTEGER，可为空"]
@@ -1003,14 +1077,32 @@ FeatureRequests --> EvaluatedAt["evaluated_at<br/>TEXT时间戳，可为空"]
 FeatureRequests --> StartedAt["started_at<br/>TEXT时间戳，可为空"]
 FeatureRequests --> VerifiedAt["verified_at<br/>TEXT时间戳，可为空"]
 FeatureRequests --> CompletedAt["completed_at<br/>TEXT时间戳，可为空"]
-SchemaMigrations --> VersionTracking["版本号跟踪"]
-VersionTracking --> MigrationStatus["迁移状态记录"]
+RCAReports --> IssueHash["issue_hash<br/>TEXT，NOT NULL"]
+RCAReports --> RecurrenceCount["recurrence_count<br/>INTEGER DEFAULT 0"]
+RCAReports --> RootCause["root_cause<br/>TEXT，可为空"]
+RCAReports --> Pattern["pattern<br/>TEXT，可为空"]
+RCAReports --> SuggestedStrategy["suggested_strategy<br/>TEXT，可为空"]
+RCAReports --> RelatedIssues["related_issues<br/>JSON数组，可为空"]
+RCAReports --> Confidence["confidence<br/>REAL DEFAULT 0.5"]
+RCAReports --> CreatedAt["created_at<br/>TEXT，NOT NULL"]
+Ideas --> Title["title<br/>TEXT，NOT NULL"]
+Ideas --> Description["description<br/>TEXT DEFAULT ''"]
+Ideas --> GoalId["goal_id<br/>INTEGER，可为空"]
+Ideas --> Status["status<br/>TEXT DEFAULT 'proposed'"]
+Ideas --> Priority["priority<br/>INTEGER DEFAULT 50"]
+Ideas --> FeasibilityScore["feasibility_score<br/>REAL，可为空"]
+Ideas --> EstimatedEffort["estimated_effort<br/>TEXT，可为空"]
+Ideas --> CreatedAt2["created_at<br/>TEXT DEFAULT (datetime('now'))"]
+Ideas --> ApprovedAt["approved_at<br/>TEXT，可为空"]
+Ideas --> CompletedAt2["completed_at<br/>TEXT，可为空"]
 ```
 
 **图表来源**
 - [vivify/storage/migrations/0001_init.sql:1-100](file://vivify/storage/migrations/0001_init.sql#L1-L100)
 - [vivify/storage/migrations/0002_add_verification_method.sql:1-7](file://vivify/storage/migrations/0002_add_verification_method.sql#L1-L7)
 - [vivify/storage/migrations/0003_enhance_feature_model.sql:1-19](file://vivify/storage/migrations/0003_enhance_feature_model.sql#L1-L19)
+- [vivify/storage/migrations/0004_rca_tables.sql:1-20](file://vivify/storage/migrations/0004_rca_tables.sql#L1-L20)
+- [vivify/storage/migrations/0005_idea_table.sql:1-23](file://vivify/storage/migrations/0005_idea_table.sql#L1-L23)
 
 ### 向后兼容性设计
 数据库提供者实现了向后兼容的处理逻辑，确保新旧版本的数据库都能正常工作：
@@ -1066,7 +1158,7 @@ UpdateDB3 --> FinalizeFeature["Finalize Feature<br/>completed_at + 状态更新"
 - [vivify/agents/prompts/parsers.py:96-131](file://vivify/agents/prompts/parsers.py#L96-L131)
 
 ### 数据模型更新
-**更新**：FeatureRequest 和 FeatureSpec 模型都包含了新的生命周期跟踪字段，支持可选的验证方法定义和完整的生命周期管理。
+**更新**：FeatureRequest 和 FeatureSpec 模型都包含了新的生命周期跟踪字段，支持可选的验证方法定义和完整的生命周期管理。**新增**：Idea 模型支持想法的生命周期管理，包括提议、批准、分解和完成状态。
 
 ```mermaid
 classDiagram
@@ -1107,11 +1199,26 @@ class FeatureRequest {
 +created_at : datetime
 +updated_at : datetime
 }
+class Idea {
++id : Optional[int]
++title : str
++description : str
++goal_id : Optional[int]
++status : IdeaStatus
++priority : int
++feasibility_score : Optional[float]
++estimated_effort : Optional[str]
++created_at : datetime
++approved_at : Optional[datetime]
++completed_at : Optional[datetime]
+}
 FeatureSpec --> FeatureRequest : "转换为"
+Idea --> FeatureRequest : "分解为"
 ```
 
 **图表来源**
 - [vivify/models/feature.py:60-101](file://vivify/models/feature.py#L60-L101)
+- [vivify/models/idea.py:22-38](file://vivify/models/idea.py#L22-L38)
 
 ### 统计查询与分析
 **新增**：DashboardDB 提供 get_feature_stats 方法，支持特性统计分析功能。
@@ -1166,13 +1273,234 @@ Storage-->>Agent : 更新完成
 - [vivify/storage/migrations/0001_init.sql:1-100](file://vivify/storage/migrations/0001_init.sql#L1-L100)
 - [vivify/storage/migrations/0002_add_verification_method.sql:1-7](file://vivify/storage/migrations/0002_add_verification_method.sql#L1-L7)
 - [vivify/storage/migrations/0003_enhance_feature_model.sql:1-19](file://vivify/storage/migrations/0003_enhance_feature_model.sql#L1-L19)
+- [vivify/storage/migrations/0004_rca_tables.sql:1-20](file://vivify/storage/migrations/0004_rca_tables.sql#L1-L20)
+- [vivify/storage/migrations/0005_idea_table.sql:1-23](file://vivify/storage/migrations/0005_idea_table.sql#L1-L23)
 - [vivify/storage/sqlite_provider.py:193-242](file://vivify/storage/sqlite_provider.py#L193-L242)
 - [vivify/models/feature.py:60-101](file://vivify/models/feature.py#L60-L101)
+- [vivify/models/idea.py:22-38](file://vivify/models/idea.py#L22-L38)
 - [vivify/goals/decomposer.py:58-77](file://vivify/goals/decomposer.py#L58-L77)
 - [vivify/kernel/feature_pipeline.py:320-403](file://vivify/kernel/feature_pipeline.py#L320-L403)
 - [vivify/agents/prompts/templates/feature_verify.md.j2:1-53](file://vivify/agents/prompts/templates/feature_verify.md.j2#L1-L53)
 - [vivify/agents/prompts/parsers.py:96-131](file://vivify/agents/prompts/parsers.py#L96-L131)
 - [vivify/dashboard/db.py:130-163](file://vivify/dashboard/db.py#L130-L163)
+
+## 根因分析与想法管理系统
+
+### 根因分析系统架构
+系统新增了完整的根因分析（RCA）功能，支持重复问题的根因分析和修复策略建议：
+
+```mermaid
+classDiagram
+class RootCauseAnalyzer {
++analyze_recurrence(issue) RcaReport?
++group_similar_issues(issues) List[IssueCluster]
++get_fix_history(issue) List[ActionLog]
++format_rca_context(report) str
++save_rca_report(report) int
++get_rca_reports(issue_hash, limit) List[dict]
+}
+class RcaReport {
++issue_hash : str
++recurrence_count : int
++root_cause : Optional[str]
++pattern : Optional[str]
++suggested_strategy : Optional[str]
++related_issues : List[str]
++confidence : float
++created_at : datetime
+}
+class IssueCluster {
++representative : Issue
++members : List[Issue]
++category : str
+}
+class SqliteStorageProvider {
++save_rca_report(report) int
++get_rca_reports(issue_hash, limit) List[dict]
+}
+RootCauseAnalyzer --> RcaReport : "生成"
+RootCauseAnalyzer --> IssueCluster : "聚类"
+RootCauseAnalyzer --> SqliteStorageProvider : "持久化"
+```
+
+**图表来源**
+- [vivify/intelligence/rca.py:40-142](file://vivify/intelligence/rca.py#L40-L142)
+- [vivify/storage/sqlite_provider.py:450-500](file://vivify/storage/sqlite_provider.py#L450-L500)
+
+### RCA 报告表设计
+RCA 报告表支持根因分析结果的持久化存储，包括重复次数、根因、模式、修复策略等关键信息：
+
+```mermaid
+erDiagram
+RCA_REPORTS {
+integer id PK
+text issue_hash
+integer recurrence_count
+text root_cause
+text pattern
+text suggested_strategy
+text related_issues
+real confidence
+text created_at
+}
+ACTION_LOGS {
+integer id PK
+text run_id
+integer round_num
+text action_type
+text status
+text category
+text level
+text title
+text prompt
+text result_summary
+integer improved
+real duration_seconds
+text details_json
+text commit_hash
+text pr_url
+text created_at
+}
+FEATURE_REQUESTS {
+integer id PK
+text title
+text description
+text type
+text parent_goal
+integer parent_id FK
+text priority
+text status
+text development_result
+text commit_hash
+text pr_url
+text feasibility
+text summary
+text verification_method
+text image_urls
+integer idea_id
+integer retry_count
+text batch_commit_hash
+text verification_result
+text evaluated_at
+text started_at
+text verified_at
+text completed_at
+text created_at
+text updated_at
+}
+RCA_REPORTS ||--o{ ACTION_LOGS : "关联"
+RCA_REPORTS ||--o{ FEATURE_REQUESTS : "关联"
+```
+
+**图表来源**
+- [vivify/storage/migrations/0004_rca_tables.sql:7-17](file://vivify/storage/migrations/0004_rca_tables.sql#L7-L17)
+- [vivify/storage/sqlite_provider.py:450-500](file://vivify/storage/sqlite_provider.py#L450-L500)
+
+### 想法管理系统架构
+系统新增了想法（Idea）管理系统，作为目标到特性请求之间的中间层：
+
+```mermaid
+classDiagram
+class Idea {
++id : Optional[int]
++title : str
++description : str
++goal_id : Optional[int]
++status : IdeaStatus
++priority : int
++feasibility_score : Optional[float]
++estimated_effort : Optional[str]
++created_at : datetime
++approved_at : Optional[datetime]
++completed_at : Optional[datetime]
+}
+class IdeaStatus {
+<<enumeration>>
+proposed
+approved
+decomposed
+completed
+}
+class SqliteStorageProvider {
++store_idea(idea) int
++get_idea(idea_id) Idea?
++get_ideas_by_status(status) List[Idea]
++get_ideas_by_goal(goal_id) List[Idea]
++update_idea_status(idea_id, status) void
++find_similar_idea(title) Idea?
+}
+class IDEA_STATUSES {
+<<constant>>
+proposed
+approved
+decomposed
+completed
+}
+Idea --> IdeaStatus : "使用"
+SqliteStorageProvider --> Idea : "CRUD操作"
+```
+
+**图表来源**
+- [vivify/models/idea.py:22-38](file://vivify/models/idea.py#L22-L38)
+- [vivify/storage/sqlite_provider.py:660-746](file://vivify/storage/sqlite_provider.py#L660-L746)
+
+### 想法生命周期管理
+想法管理系统支持从提议到完成的完整生命周期管理：
+
+```mermaid
+flowchart TD
+Proposed["提议状态<br/>proposed"] --> ProposedCheck["检查重复想法<br/>find_similar_idea"]
+ProposedCheck --> ProposedDuplicate{"发现重复?"}
+ProposedDuplicate --> |是| Merge["合并到现有想法"]
+ProposedDuplicate --> |否| Approve["批准想法<br/>approved"]
+Approve --> Decompose["分解为特性请求<br/>decomposed"]
+Decompose --> Complete["完成想法<br/>completed"]
+Merge --> Approve
+```
+
+**图表来源**
+- [vivify/models/idea.py:17-19](file://vivify/models/idea.py#L17-L19)
+- [vivify/storage/sqlite_provider.py:722-738](file://vivify/storage/sqlite_provider.py#L722-L738)
+
+### 根因分析与想法管理的集成
+系统将根因分析和想法管理功能集成到特征流水线中：
+
+```mermaid
+sequenceDiagram
+participant Kernel as "内核循环"
+participant RCA as "根因分析器"
+participant IdeaMgr as "想法管理器"
+participant Storage as "存储提供者"
+participant FeaturePipeline as "特征流水线"
+Kernel->>RCA : analyze_recurrence(issues)
+RCA->>Storage : get_rca_reports(issue.hash)
+Storage-->>RCA : 历史RCA报告
+RCA->>RCA : 检测重复模式
+RCA->>Storage : save_rca_report(report)
+Storage-->>RCA : 保存成功
+RCA-->>Kernel : RCA报告
+Kernel->>IdeaMgr : find_similar_idea(title)
+IdeaMgr->>Storage : find_similar_idea(title)
+Storage-->>IdeaMgr : 相似想法
+IdeaMgr-->>Kernel : 想法状态
+Kernel->>FeaturePipeline : 创建/更新特性请求
+FeaturePipeline->>Storage : 保存特性请求
+Storage-->>FeaturePipeline : 保存成功
+```
+
+**图表来源**
+- [vivify/kernel/loop.py:1071-1120](file://vivify/kernel/loop.py#L1071-L1120)
+- [vivify/intelligence/rca.py:40-142](file://vivify/intelligence/rca.py#L40-L142)
+- [vivify/storage/sqlite_provider.py:660-746](file://vivify/storage/sqlite_provider.py#L660-L746)
+
+**章节来源**
+- [vivify/intelligence/rca.py:40-142](file://vivify/intelligence/rca.py#L40-L142)
+- [vivify/storage/migrations/0004_rca_tables.sql:1-20](file://vivify/storage/migrations/0004_rca_tables.sql#L1-L20)
+- [vivify/storage/migrations/0005_idea_table.sql:1-23](file://vivify/storage/migrations/0005_idea_table.sql#L1-L23)
+- [vivify/models/idea.py:1-38](file://vivify/models/idea.py#L1-L38)
+- [vivify/storage/sqlite_provider.py:450-500](file://vivify/storage/sqlite_provider.py#L450-L500)
+- [vivify/storage/sqlite_provider.py:660-746](file://vivify/storage/sqlite_provider.py#L660-L746)
+- [vivify/kernel/loop.py:1071-1120](file://vivify/kernel/loop.py#L1071-L1120)
 
 ## 依赖关系分析
 
@@ -1211,7 +1539,7 @@ VivifyCLI --> Ruff
 - [pyproject.toml:22-38](file://pyproject.toml#L22-L38)
 
 ### 内部模块依赖
-系统内部模块之间存在清晰的依赖关系，现已增强多实例支持、配置健康监控和统计分析：
+系统内部模块之间存在清晰的依赖关系，现已增强多实例支持、配置健康监控、统计分析和智能化根因分析：
 
 ```mermaid
 graph TB
@@ -1233,6 +1561,8 @@ FeaturePipeline["kernel/feature_pipeline.py<br/>特征验证方法集成 + 生�
 GoalDecomposer["goals/decomposer.py<br/>特征分解器"]
 VerifyTemplate["agents/prompts/templates/feature_verify.md.j2<br/>验证模板"]
 VerifyParser["agents/prompts/parsers.py<br/>验证结果解析"]
+RCAAnalyzer["intelligence/rca.py<br/>根因分析 + 修复策略"]
+IdeaModel["models/idea.py<br/>想法管理 + 生命周期"]
 End_Time_Stamp["kernel/code_hash.py<br/>时间戳处理"]
 Retry_Count["kernel/failure_tracker.py<br/>重试计数管理"]
 Batch_Hash["kernel/dispatch.py<br/>批量提交处理"]
@@ -1252,6 +1582,8 @@ SQLiteProvider["storage/sqlite_provider.py"]
 SchemaSQL["storage/migrations/0001_init.sql"]
 VerificationMigration["storage/migrations/0002_add_verification_method.sql<br/>verification_method列"]
 LifecycleMigration["storage/migrations/0003_enhance_feature_model.sql<br/>生命周期跟踪字段"]
+RCAMigration["storage/migrations/0004_rca_tables.sql<br/>RCA报告表"]
+IdeaMigration["storage/migrations/0005_idea_table.sql<br/>ideas表"]
 end
 subgraph "模型层"
 FeatureModel["models/feature.py"]
@@ -1266,12 +1598,17 @@ DashboardApp --> ConfigLoader
 DashboardApp --> HealthMonitor
 DashboardApp --> Probes
 DashboardApp --> FeaturePipeline
+DashboardApp --> RCAAnalyzer
+DashboardApp --> IdeaModel
 DashboardDB --> SQLiteProvider
 SQLiteProvider --> SchemaSQL
 SQLiteProvider --> VerificationMigration
 SQLiteProvider --> LifecycleMigration
+SQLiteProvider --> RCAMigration
+SQLiteProvider --> IdeaMigration
 FeatureModel --> SQLiteProvider
 SnapshotModel --> SQLiteProvider
+IdeaModel --> SQLiteProvider
 GoalDecomposer --> FeatureModel
 FeaturePipeline --> FeatureModel
 FeaturePipeline --> VerifyTemplate
@@ -1282,6 +1619,8 @@ FeaturePipeline --> Verification_Result
 FeaturePipeline --> Idea_ID
 FeaturePipeline --> Image_URLs
 FeaturePipeline --> End_Time_Stamp
+RCAAnalyzer --> SQLiteProvider
+IdeaModel --> SQLiteProvider
 Statistics --> DashboardDB
 ```
 
@@ -1299,6 +1638,8 @@ Statistics --> DashboardDB
 - [vivify/kernel/feature_pipeline.py:175-338](file://vivify/kernel/feature_pipeline.py#L175-L338)
 - [vivify/agents/prompts/templates/feature_verify.md.j2:1-53](file://vivify/agents/prompts/templates/feature_verify.md.j2#L1-L53)
 - [vivify/agents/prompts/parsers.py:96-131](file://vivify/agents/prompts/parsers.py#L96-L131)
+- [vivify/intelligence/rca.py:40-142](file://vivify/intelligence/rca.py#L40-L142)
+- [vivify/models/idea.py:1-38](file://vivify/models/idea.py#L1-L38)
 
 **章节来源**
 - [pyproject.toml:1-70](file://pyproject.toml#L1-L70)
@@ -1311,7 +1652,7 @@ Statistics --> DashboardDB
 - [vivify/config/loader.py:1-78](file://vivify/config/loader.py#L1-L78)
 
 ## 性能考虑
-系统在设计时充分考虑了性能优化，多实例支持、配置健康监控和统计分析功能并未显著影响性能：
+系统在设计时充分考虑了性能优化，多实例支持、配置健康监控、统计分析功能和新增的根因分析及想法管理功能并未显著影响性能：
 
 - **只读数据库连接**：DashboardDB 使用 `PRAGMA query_only = ON` 确保只读访问，避免意外写入
 - **WAL 模式**：启用 Write-Ahead Logging 提高并发读取性能
@@ -1327,6 +1668,10 @@ Statistics --> DashboardDB
 - **向后兼容性优化**：verification_method 和新增字段的可选设计避免了额外的数据库开销
 - **生命周期跟踪优化**：新增字段采用可空设计，不影响现有数据的存储和查询性能
 - **索引优化**：为新增的 idea_id 和 batch_commit_hash 字段建立索引，提升查询性能
+- **RCA 查询优化**：为 rca_reports 表的 issue_hash 字段建立索引，提升重复问题查询性能
+- **想法管理优化**：为 ideas 表的 status 和 goal_id 字段建立索引，提升想法查询性能
+- **根因分析缓存**：RCA 分析结果缓存在内存中，避免重复计算
+- **批量操作优化**：想法相似性检查使用双向子串匹配，优化重复检测性能
 
 ## 故障排除指南
 
@@ -1427,6 +1772,31 @@ Statistics --> DashboardDB
     - 确认重试限制配置的正确性
     - 检查批量处理的事务一致性
 
+17. **根因分析功能问题**
+    - 检查 rca_reports 表是否存在
+    - 验证 RCA 报告的存储和查询逻辑
+    - 确认重复问题检测算法的正确性
+    - 检查 RCA 报告的 JSON 格式存储和解析
+
+18. **想法管理系统问题**
+    - 检查 ideas 表是否存在
+    - 验证想法的 CRUD 操作
+    - 确认想法状态转换的正确性
+    - 检查重复想法检测逻辑
+    - 验证想法与目标的关联关系
+
+19. **RCA 查询性能问题**
+    - 检查 rca_reports 表的索引是否正确创建
+    - 验证 RCA 报告查询的 SQL 语法
+    - 确认重复问题检测的性能优化
+    - 检查 RCA 报告缓存机制
+
+20. **想法查询性能问题**
+    - 检查 ideas 表的索引是否正确创建
+    - 验证按状态和目标查询的 SQL 语法
+    - 确认重复想法检测的性能优化
+    - 检查想法状态转换的时间戳更新
+
 **章节来源**
 - [vivify/dashboard/app.py:111-140](file://vivify/dashboard/app.py#L111-L140)
 - [vivify/dashboard/db.py:12-24](file://vivify/dashboard/db.py#L12-L24)
@@ -1436,10 +1806,14 @@ Statistics --> DashboardDB
 - [vivify/dashboard/static/app.js:675-770](file://vivify/dashboard/static/app.js#L675-L770)
 - [vivify/storage/migrations/0002_add_verification_method.sql:1-7](file://vivify/storage/migrations/0002_add_verification_method.sql#L1-L7)
 - [vivify/storage/migrations/0003_enhance_feature_model.sql:1-19](file://vivify/storage/migrations/0003_enhance_feature_model.sql#L1-L19)
+- [vivify/storage/migrations/0004_rca_tables.sql:1-20](file://vivify/storage/migrations/0004_rca_tables.sql#L1-L20)
+- [vivify/storage/migrations/0005_idea_table.sql:1-23](file://vivify/storage/migrations/0005_idea_table.sql#L1-L23)
 - [vivify/storage/sqlite_provider.py:193-242](file://vivify/storage/sqlite_provider.py#L193-L242)
+- [vivify/intelligence/rca.py:40-142](file://vivify/intelligence/rca.py#L40-L142)
+- [vivify/models/idea.py:22-38](file://vivify/models/idea.py#L22-L38)
 
 ## 结论
-Web 仪表板系统为 Vivify 自愈引擎提供了直观、实时的可视化界面。**重大更新**：系统现已支持配置健康监控系统，提供项目配置完整性检查、实时健康状态监控和智能修复建议，大幅增强了系统的实用性和维护性。**统计端点增强**：新增 /api/features/stats 端点和配套UI功能，提供特性统计分析、生命周期跟踪和交互式详情展示，包括优先级/类型徽章、状态高亮、警告动画和侧边栏详情。**数据库迁移更新**：新增 verification_method 列支持特征验证方法定义，为特征验证流程提供结构化支持。**数据库迁移架构更新**：新增 migration 0003 生命周期跟踪字段支持，包括 image_urls、idea_id、retry_count、batch_commit_hash、verification_result 及时间戳字段的数据库支持和向后兼容性设计。
+Web 仪表板系统为 Vivify 自愈引擎提供了直观、实时的可视化界面。**重大更新**：系统现已支持配置健康监控系统，提供项目配置完整性检查、实时健康状态监控和智能修复建议，大幅增强了系统的实用性和维护性。**统计端点增强**：新增 /api/features/stats 端点和配套UI功能，提供特性统计分析、生命周期跟踪和交互式详情展示，包括优先级/类型徽章、状态高亮、警告动画和侧边栏详情。**数据库迁移更新**：新增 verification_method 列支持特征验证方法定义，为特征验证流程提供结构化支持。**数据库迁移架构更新**：新增 migration 0003 生命周期跟踪字段支持，包括 image_urls、idea_id、retry_count、batch_commit_hash、verification_result 及时间戳字段的数据库支持和向后兼容性设计。**新增数据库功能**：新增 RCA 报告表和 ideas 表，支持根因分析和想法管理，进一步完善了系统的智能化监控能力。
 
 统计端点与UI增强功能包括：
 - **统计分析端点**：/api/features/stats 提供特性类型、优先级、状态分布和重试计数的综合统计
@@ -1480,4 +1854,18 @@ Web 仪表板系统为 Vivify 自愈引擎提供了直观、实时的可视化�
 - **时间戳跟踪**：多个时间戳字段跟踪特征生命周期中的关键节点
 - **向后兼容性**：所有新增字段都支持可空设计，不影响现有数据
 
-前端界面采用现代化的设计理念，提供了良好的用户体验。整体而言，这是一个设计合理、功能完备的监控和管理平台，现已具备强大的多实例支持能力、全面的配置健康监控能力、增强的统计分析功能和交互式详情展示，以及完善的生命周期跟踪系统，能够满足复杂开发环境下的监控需求。
+根因分析系统更新：
+- **重复问题检测**：基于历史修复记录和模式分析，识别重复出现的问题
+- **修复策略建议**：为重复问题提供针对性的修复策略和建议
+- **根因报告存储**：RCA 报告表持久化存储根因分析结果
+- **历史模式学习**：通过机器学习算法识别问题的根本原因和解决模式
+- **上下文注入**：将 RCA 分析结果注入到后续的修复流程中
+
+想法管理系统更新：
+- **中间层抽象**：ideas 表作为目标到特性请求之间的中间层
+- **想法生命周期**：支持提议、批准、分解、完成的完整生命周期管理
+- **重复检测**：通过双向子串匹配检测重复想法，避免资源浪费
+- **可行性评估**：支持想法的可行性评分和预估工作量
+- **状态跟踪**：实时跟踪想法的状态变化和时间戳信息
+
+前端界面采用现代化的设计理念，提供了良好的用户体验。整体而言，这是一个设计合理、功能完备的监控和管理平台，现已具备强大的多实例支持能力、全面的配置健康监控能力、增强的统计分析功能、交互式详情展示、完善的生命周期跟踪系统、智能化的根因分析功能和高效的想法管理系统，能够满足复杂开发环境下的监控需求。

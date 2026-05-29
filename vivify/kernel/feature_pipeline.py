@@ -251,6 +251,10 @@ class FeaturePipeline:
                 recent_history=history,
                 implementation_approach=approach,
             )
+            # Task #129: capture HEAD before agent runs so we can tell
+            # whether *this round* produced new commits, independent of any
+            # historical commits left over in a reused worktree.
+            before_sha = self._get_head_sha(wt.path)
             result = self.agent.heal(
                 prompt,
                 max_turns=max_turns,
@@ -259,6 +263,8 @@ class FeaturePipeline:
                 timeout_seconds=timeout,
             )
             output = result.output or ""
+            after_sha = self._get_head_sha(wt.path)
+            has_new_commits = bool(after_sha) and (before_sha != after_sha)
 
             # Quality gate inside the worktree.
             quality = run_quality_checks(
@@ -283,12 +289,59 @@ class FeaturePipeline:
                 report.status = "deployed_with_issues"
                 return
 
-            # ── Fix #69: pre-check for actual code changes before push_and_open ──
+            # ── Task #129: per-round HEAD comparison ──
+            # Distinguish "this round produced no new commits" from
+            # "worktree has no diff vs base" (the latter is also checked
+            # below as a final sanity guard before pushing).
+            if not has_new_commits:
+                new_retry = int(getattr(feature, "retry_count", 0) or 0) + 1
+                max_empty = self.config.max_retries
+                if new_retry >= max_empty:
+                    logger.warning(
+                        "Feature #%s: agent produced no new commits for "
+                        "%d consecutive rounds; escalating to "
+                        "deployed_with_issues for human review",
+                        feature.id, new_retry,
+                    )
+                    self._update(
+                        feature,
+                        status="deployed_with_issues",
+                        retry_count=new_retry,
+                        development_result=(
+                            "Agent produced no new commits this round; "
+                            f"escalated after {new_retry} attempts "
+                            f"(max_retries={max_empty})"
+                        )[:2000],
+                    )
+                    report.status = "deployed_with_issues"
+                    return
+                logger.warning(
+                    "Feature #%s: agent produced no new commits this round "
+                    "(before=%s, after=%s); rolling back to approved for "
+                    "retry %d/%d",
+                    feature.id, before_sha[:8], after_sha[:8],
+                    new_retry, max_empty,
+                )
+                self._update(
+                    feature,
+                    status="approved",
+                    retry_count=new_retry,
+                    development_result=(
+                        "Agent produced no new commits this round; "
+                        f"will retry (attempt {new_retry}/{max_empty})"
+                    ),
+                )
+                report.status = "approved"
+                return
+
+            # ── Final sanity guard: ensure worktree as a whole has changes vs base.
+            # This catches the rare case where new commits were produced
+            # but they net out to zero diff against base_ref.
             if not self._has_actual_changes(wt.path, wt.base_ref):
                 logger.warning(
-                    "Feature #%s: AI agent produced no actual code changes, "
-                    "rolling back to approved for retry",
-                    feature.id,
+                    "Feature #%s: worktree has new commits but no diff "
+                    "against %s; rolling back to approved",
+                    feature.id, wt.base_ref,
                 )
                 new_retry = int(getattr(feature, "retry_count", 0) or 0) + 1
                 self._update(
@@ -296,7 +349,7 @@ class FeaturePipeline:
                     status="approved",
                     retry_count=new_retry,
                     development_result=(
-                        "AI agent did not produce actual code changes; "
+                        "Worktree has no commits relative to base; "
                         f"will retry (attempt {new_retry})"
                     ),
                 )
@@ -577,6 +630,14 @@ class FeaturePipeline:
             try:
                 prompt = self._build_develop_prompt(feature)
                 wt = self._prepare_worktree(feature)
+                # Task #129: snapshot HEAD before remote session starts so
+                # finalize can detect whether new commits were produced.
+                try:
+                    object.__setattr__(
+                        wt, "_before_sha", self._get_head_sha(wt.path),
+                    )
+                except Exception:  # pragma: no cover
+                    pass
                 session = remote_mgr.create_session(
                     task=prompt,
                     workspace=wt.path,
@@ -679,12 +740,53 @@ class FeaturePipeline:
                 report.status = "deployed_with_issues"
                 return
 
-            # Fix #69: pre-check for actual code changes (batch path)
+            # Task #129: HEAD-based per-round change detection
+            before_sha = getattr(wt, "_before_sha", "") or ""
+            after_sha = self._get_head_sha(wt.path)
+            has_new_commits = bool(after_sha) and (before_sha != after_sha)
+            if not has_new_commits:
+                new_retry = int(getattr(feature, "retry_count", 0) or 0) + 1
+                max_empty = self.config.max_retries
+                if new_retry >= max_empty:
+                    logger.warning(
+                        "Feature #%s (batch): agent produced no new commits "
+                        "for %d consecutive rounds; escalating",
+                        feature.id, new_retry,
+                    )
+                    self._update(
+                        feature,
+                        status="deployed_with_issues",
+                        retry_count=new_retry,
+                        development_result=(
+                            "Agent produced no new commits this round; "
+                            f"escalated after {new_retry} attempts"
+                        )[:2000],
+                    )
+                    report.status = "deployed_with_issues"
+                    return
+                logger.warning(
+                    "Feature #%s (batch): no new commits this round, "
+                    "rolling back to approved (retry %d/%d)",
+                    feature.id, new_retry, max_empty,
+                )
+                self._update(
+                    feature,
+                    status="approved",
+                    retry_count=new_retry,
+                    development_result=(
+                        "Agent produced no new commits this round; "
+                        f"will retry (attempt {new_retry}/{max_empty})"
+                    ),
+                )
+                report.status = "approved"
+                return
+
+            # Final sanity guard: worktree must have changes vs base before push
             if not self._has_actual_changes(wt.path, wt.base_ref):
                 logger.warning(
-                    "Feature #%s (batch): no actual code changes, "
-                    "rolling back to approved",
-                    feature.id,
+                    "Feature #%s (batch): worktree has new commits but no "
+                    "diff vs %s; rolling back",
+                    feature.id, wt.base_ref,
                 )
                 new_retry = int(getattr(feature, "retry_count", 0) or 0) + 1
                 self._update(
@@ -692,7 +794,7 @@ class FeaturePipeline:
                     status="approved",
                     retry_count=new_retry,
                     development_result=(
-                        "AI agent did not produce actual code changes; "
+                        "Worktree has no commits relative to base; "
                         f"will retry (attempt {new_retry})"
                     ),
                 )
@@ -1195,6 +1297,25 @@ class FeaturePipeline:
             return result.returncode == 0 and bool(result.stdout.strip())
         except Exception:
             return False  # assume no changes on error to avoid invalid PRs
+
+    # ── Task #129: per-round HEAD sha helper ─────────────────────────
+    @staticmethod
+    def _get_head_sha(worktree_path) -> str:
+        """Return the worktree's current HEAD commit sha (empty string on error).
+
+        Used to compare HEAD before/after an agent run so we can detect
+        whether *this round* produced any new commits — independent of
+        residual commits that may exist on a reused worktree.
+        """
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                capture_output=True, text=True, timeout=10,
+                cwd=str(worktree_path),
+            )
+            return result.stdout.strip() if result.returncode == 0 else ""
+        except Exception:
+            return ""
 
     # ── Fix #69: recover deployed_with_issues caused by PR failures ───────
     def _recover_failed_deployments(self) -> None:
