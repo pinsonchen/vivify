@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from vivify.pr_mode.isolation import IsolationConfig, WorktreeIsolator
+
 logger = logging.getLogger(__name__)
 
 
@@ -52,6 +54,7 @@ class WorktreeManager:
         base_branch: str = "main",
         fetch_before_create: bool = True,
         fetch_timeout: int = 120,
+        isolation_config: IsolationConfig | None = None,
     ):
         self.repo_root = Path(repo_root)
         self.worktree_base = (
@@ -63,6 +66,7 @@ class WorktreeManager:
         self.base_branch = base_branch
         self.fetch_before_create = fetch_before_create
         self.fetch_timeout: int = fetch_timeout
+        self._isolator = WorktreeIsolator(isolation_config)
 
     # ── public API ──────────────────────────────────────────────────────────
     def create(self, slug_hint: str, *, base_ref: Optional[str] = None) -> Worktree:
@@ -89,10 +93,21 @@ class WorktreeManager:
                 f"git worktree add failed (ref={ref}): {result.stderr.strip()[:300]}"
             )
         logger.info("Created worktree %s on branch %s (from %s)", path, branch, ref)
+
+        # Apply physical isolation — sensitive files become invisible
+        iso_result = self._isolator.apply_isolation(path)
+        if not iso_result.success and iso_result.error != "isolation disabled":
+            logger.warning(
+                "Worktree isolation failed for %s: %s", path, iso_result.error
+            )
+
         return Worktree(path=path, branch=branch, base_ref=ref)
 
     def remove(self, worktree: Worktree, *, delete_branch: bool = True) -> None:
         """Remove the worktree directory and optionally delete the local branch."""
+        # Remove isolation before worktree removal for clean state
+        self._isolator.remove_isolation(worktree.path)
+
         result = _run(
             ["git", "worktree", "remove", "--force", str(worktree.path)],
             cwd=self.repo_root, timeout=60,

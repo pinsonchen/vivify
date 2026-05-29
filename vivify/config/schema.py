@@ -15,6 +15,13 @@ from pydantic import BaseModel, Field, ConfigDict
 # ────────────────────────────────────────────────────────────────────────────────
 
 
+class WorktreeIsolationConfig(BaseModel):
+    """Physical isolation for agent worktrees via sparse-checkout."""
+
+    enabled: bool = True
+    extra_exclude_patterns: List[str] = Field(default_factory=list)
+
+
 class PrConfig(BaseModel):
     base_branch: str = "main"
     branch_prefix: str = "vivify/"
@@ -23,6 +30,7 @@ class PrConfig(BaseModel):
     draft_default: bool = False
     fetch_timeout_seconds: int = 120
     merge_poll_timeout_seconds: int = 120  # 等待 PR 合并的超时（秒），0=不等待
+    isolation: WorktreeIsolationConfig = Field(default_factory=WorktreeIsolationConfig)
 
 
 class QoderCliConfig(BaseModel):
@@ -266,6 +274,15 @@ class BudgetLimitConfig(BaseModel):
     cooldown_multiplier: float = 2.0     # 降频时循环间隔倍增系数
 
 
+class ExternalizationConfig(BaseModel):
+    """Capability externalization — promote capsules to native project abilities."""
+
+    enabled: bool = True
+    check_interval_rounds: int = 10      # 每 N 轮检查一次
+    output_dir: str = ".vivify/externalized"
+    auto_create_pr: bool = False         # 暂不自动 PR，仅生成文件
+
+
 class CapsuleConfig(BaseModel):
     """Skill capsule (fix-experience reuse) configuration."""
 
@@ -287,6 +304,18 @@ class KnowledgeGCConfig(BaseModel):
     delete_after_days: int = 90        # N 天后删除
     min_access_count: int = 2          # 最低引用次数（低于此值加速老化）
     gc_interval_hours: int = 24        # GC 执行间隔
+
+
+class RewardConfig(BaseModel):
+    """Multi-modal reward signal system configuration."""
+
+    enabled: bool = True
+    correctness_weight: float = 0.40
+    efficiency_weight: float = 0.20
+    stability_weight: float = 0.25
+    elegance_weight: float = 0.15
+    stability_check_days: int = 3      # N 天后回溯检查稳定性
+    max_history: int = 100             # 最大信号历史记录数
 
 
 class EpigeneticsConfig(BaseModel):
@@ -385,8 +414,10 @@ class VivifyConfig(BaseModel):
     verification: VerificationConfig = Field(default_factory=VerificationConfig)
     budget: BudgetLimitConfig = Field(default_factory=BudgetLimitConfig)
     capsules: CapsuleConfig = Field(default_factory=CapsuleConfig)
+    externalization: ExternalizationConfig = Field(default_factory=ExternalizationConfig)
     knowledge_gc: KnowledgeGCConfig = Field(default_factory=KnowledgeGCConfig)
     epigenetics: EpigeneticsConfig = Field(default_factory=EpigeneticsConfig)
+    reward: RewardConfig = Field(default_factory=RewardConfig)
     rules: List[dict] = Field(default_factory=list)  # 复合信号规则配置
 
 
@@ -396,6 +427,8 @@ __all__ = [
     "BudgetLimitConfig",
     "CapsuleConfig",
     "EpigeneticsConfig",
+    "RewardConfig",
+    "ExternalizationConfig",
     "DeployConfig",
     "VivifyConfig",
     "DaemonConfig",
@@ -417,4 +450,5 @@ __all__ = [
     "SqliteConfig",
     "StorageConfig",
     "VerificationConfig",
+    "WorktreeIsolationConfig",
 ]

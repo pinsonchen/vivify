@@ -129,6 +129,7 @@ SCENARIO_FIXERS: dict[str, list[str]] = {
 _SCENARIOS_WITH_DEPLOY_URL = {"docs-only", "static-site", "web-app", "api-service"}
 _SCENARIOS_WITH_BUILD_CMD = {"web-app", "api-service"}
 _SCENARIOS_WITH_TEST_CMD = {"web-app", "api-service", "python-package", "cli-tool", "monorepo"}
+_SCENARIOS_WITH_LINT_CMD = {"web-app", "api-service", "python-package", "cli-tool", "monorepo"}
 
 
 class Configurator:
@@ -193,6 +194,24 @@ class Configurator:
                 )
             )
 
+        if scenario in _SCENARIOS_WITH_LINT_CMD:
+            questions.append(
+                ConfigQuestion(
+                    key="commands.lint",
+                    label="Lint 命令",
+                    hint="例如 ruff check . / eslint src/",
+                    required=False,
+                )
+            )
+            questions.append(
+                ConfigQuestion(
+                    key="commands.typecheck",
+                    label="类型检查命令",
+                    hint="例如 mypy . / tsc --noEmit",
+                    required=False,
+                )
+            )
+
         return questions
 
     def auto_discover(
@@ -244,6 +263,13 @@ class Configurator:
             self._discover_from_package_json(signals, questions)
             self._discover_from_workflows(signals, questions)
             self._discover_from_makefile(signals, questions)
+            # ── 新增信号源 ──
+            self._discover_from_dockerfile(signals, questions)
+            self._discover_from_docker_compose(signals, questions)
+            self._discover_from_ci_workflows_enhanced(signals, questions)
+            self._discover_from_readme(signals, questions)
+            self._discover_from_makefile_full(signals, questions)
+            self._discover_from_runtime_versions(signals, questions)
     
         return questions
     
@@ -368,6 +394,265 @@ class Configurator:
                         f"make {target}",
                         "Makefile",
                     )
+        except Exception:
+            pass
+
+    # ---------- 新增发现源 ----------
+
+    @staticmethod
+    def _discover_from_dockerfile(
+        signals: ProjectSignals, questions: list[ConfigQuestion]
+    ) -> None:
+        """从 Dockerfile 推断 deploy.method 和 health_endpoint。"""
+        try:
+            import re
+
+            assert signals.project_root is not None
+            dockerfile = signals.project_root / "Dockerfile"
+            if not dockerfile.exists():
+                return
+            content = dockerfile.read_text(encoding="utf-8", errors="ignore")
+
+            # deploy.method → docker
+            _fill_question(questions, "deploy.method", "docker", "Dockerfile")
+
+            # EXPOSE → health_endpoint 端口
+            expose_match = re.findall(r"(?im)^EXPOSE\s+(\d+)", content)
+            if expose_match:
+                port = expose_match[0]
+                endpoint = f"http://localhost:{port}/health"
+                _fill_question(questions, "deploy.health_endpoint", endpoint, "Dockerfile")
+        except Exception:
+            pass
+
+    @staticmethod
+    def _discover_from_docker_compose(
+        signals: ProjectSignals, questions: list[ConfigQuestion]
+    ) -> None:
+        """从 docker-compose.yml 推断 deploy.method 和 health_endpoint。"""
+        try:
+            import re
+
+            assert signals.project_root is not None
+            compose_file = None
+            for name in ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"):
+                candidate = signals.project_root / name
+                if candidate.exists():
+                    compose_file = candidate
+                    break
+            if compose_file is None:
+                return
+            content = compose_file.read_text(encoding="utf-8", errors="ignore")
+            source = compose_file.name
+
+            # deploy.method → docker-compose
+            _fill_question(questions, "deploy.method", "docker-compose", source)
+
+            # 解析 ports 映射（简易 regex，匹配 "HOST:CONTAINER" 或 "PORT"）
+            port_matches = re.findall(r"[\"']?(\d+):(\d+)[\"']?", content)
+            if port_matches:
+                host_port = port_matches[0][0]
+                endpoint = f"http://localhost:{host_port}/health"
+                _fill_question(questions, "deploy.health_endpoint", endpoint, source)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _discover_from_ci_workflows_enhanced(
+        signals: ProjectSignals, questions: list[ConfigQuestion]
+    ) -> None:
+        """从 .github/workflows 增强提取 lint/typecheck/build 命令。"""
+        try:
+            import re
+
+            assert signals.project_root is not None
+            workflows_dir = signals.project_root / ".github" / "workflows"
+            if not workflows_dir.is_dir():
+                return
+            workflow_files = list(workflows_dir.glob("*.yml")) + list(
+                workflows_dir.glob("*.yaml")
+            )
+
+            # 命令模式 → 对应 question key
+            lint_patterns = [
+                (r"ruff\s+check", "ruff check ."),
+                (r"flake8", "flake8"),
+                (r"pylint", "pylint"),
+                (r"eslint", "npx eslint ."),
+                (r"biome\s+(lint|check)", "npx biome check ."),
+            ]
+            typecheck_patterns = [
+                (r"mypy", "mypy ."),
+                (r"pyright", "pyright"),
+                (r"tsc\b.*--noEmit", "tsc --noEmit"),
+                (r"tsc\b", "tsc --noEmit"),
+            ]
+            build_patterns = [
+                (r"npm\s+run\s+build", "npm run build"),
+                (r"yarn\s+build", "yarn build"),
+                (r"pnpm\s+(?:run\s+)?build", "pnpm run build"),
+                (r"cargo\s+build", "cargo build"),
+                (r"go\s+build", "go build ./..."),
+            ]
+
+            for wf in workflow_files:
+                try:
+                    content = wf.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                source = f".github/workflows/{wf.name}"
+
+                # lint
+                if not _has_value(questions, "commands.lint"):
+                    for pattern, cmd in lint_patterns:
+                        if re.search(pattern, content):
+                            _fill_question(questions, "commands.lint", cmd, source)
+                            break
+
+                # typecheck
+                if not _has_value(questions, "commands.typecheck"):
+                    for pattern, cmd in typecheck_patterns:
+                        if re.search(pattern, content):
+                            _fill_question(questions, "commands.typecheck", cmd, source)
+                            break
+
+                # build
+                if not _has_value(questions, "commands.build"):
+                    for pattern, cmd in build_patterns:
+                        if re.search(pattern, content):
+                            _fill_question(questions, "commands.build", cmd, source)
+                            break
+        except Exception:
+            pass
+
+    @staticmethod
+    def _discover_from_readme(
+        signals: ProjectSignals, questions: list[ConfigQuestion]
+    ) -> None:
+        """从 README 提取 project.description 和 deploy.health_endpoint。"""
+        try:
+            import re
+
+            assert signals.project_root is not None
+            readme_path = None
+            for name in ("README.md", "README.MD", "README.rst", "README.txt", "README"):
+                candidate = signals.project_root / name
+                if candidate.is_file():
+                    readme_path = candidate
+                    break
+            if readme_path is None:
+                return
+            content = readme_path.read_text(encoding="utf-8", errors="ignore")
+
+            # 提取项目描述（首段非标题非徽章文字）
+            for line in content.splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#") or stripped.startswith("!["):
+                    continue
+                if stripped.startswith("[") and "]" in stripped:
+                    continue
+                _fill_question(questions, "project.description", stripped[:200], "README.md")
+                break
+
+            # 提取 health endpoint 模式
+            health_match = re.search(
+                r"(https?://localhost:\d+/[\w/\-]*health[\w/\-]*)", content, re.IGNORECASE
+            )
+            if health_match:
+                _fill_question(questions, "deploy.health_endpoint", health_match.group(1), "README.md")
+            else:
+                # 尝试匹配 /health 或 /api/health 模式
+                endpoint_match = re.search(
+                    r"(?:GET|POST|endpoint|路由|route)\s*[:`]?\s*(/[\w/\-]*health[\w/\-]*)",
+                    content,
+                    re.IGNORECASE,
+                )
+                if endpoint_match:
+                    _fill_question(questions, "deploy.health_endpoint", endpoint_match.group(1), "README.md")
+        except Exception:
+            pass
+
+    @staticmethod
+    def _discover_from_makefile_full(
+        signals: ProjectSignals, questions: list[ConfigQuestion]
+    ) -> None:
+        """从 Makefile 增强解析：lint / typecheck / format / deploy targets。"""
+        try:
+            import re
+
+            assert signals.project_root is not None
+            makefile = signals.project_root / "Makefile"
+            if not makefile.exists():
+                return
+            content = makefile.read_text(encoding="utf-8", errors="ignore")
+
+            # 额外 targets（基础 test/lint/build 已由 _discover_from_makefile 处理）
+            extra_targets = {
+                "typecheck": "commands.typecheck",
+                "type-check": "commands.typecheck",
+                "check": "commands.lint",
+                "format": "commands.lint",  # fallback: format → lint
+                "fmt": "commands.lint",
+            }
+            for target, key in extra_targets.items():
+                match = re.search(
+                    rf"^{re.escape(target)}\s*:.*\n\t(.+)", content, re.MULTILINE
+                )
+                if match and not _has_value(questions, key):
+                    _fill_question(questions, key, f"make {target}", "Makefile")
+
+            # deploy target → deploy.method
+            deploy_match = re.search(
+                r"^deploy\s*:.*\n\t(.+)", content, re.MULTILINE
+            )
+            if deploy_match:
+                _fill_question(questions, "deploy.method", "command", "Makefile")
+        except Exception:
+            pass
+
+    @staticmethod
+    def _discover_from_runtime_versions(
+        signals: ProjectSignals, questions: list[ConfigQuestion]
+    ) -> None:
+        """从 .python-version / .nvmrc / .tool-versions 提取运行时版本信息。"""
+        try:
+            assert signals.project_root is not None
+            root = signals.project_root
+
+            # .python-version
+            py_ver_file = root / ".python-version"
+            if py_ver_file.is_file():
+                ver = py_ver_file.read_text(encoding="utf-8").strip().splitlines()
+                if ver:
+                    _fill_question(
+                        questions, "project.runtime_version",
+                        f"python {ver[0]}", ".python-version"
+                    )
+
+            # .nvmrc
+            nvmrc = root / ".nvmrc"
+            if nvmrc.is_file():
+                ver = nvmrc.read_text(encoding="utf-8").strip().splitlines()
+                if ver:
+                    _fill_question(
+                        questions, "project.runtime_version",
+                        f"node {ver[0]}", ".nvmrc"
+                    )
+
+            # .tool-versions (asdf format: "python 3.11.0\nnode 18.0.0")
+            tool_versions = root / ".tool-versions"
+            if tool_versions.is_file():
+                content = tool_versions.read_text(encoding="utf-8").strip()
+                if content:
+                    # 取第一个有效行作为 runtime
+                    for line in content.splitlines():
+                        stripped = line.strip()
+                        if stripped and not stripped.startswith("#"):
+                            _fill_question(
+                                questions, "project.runtime_version",
+                                stripped, ".tool-versions"
+                            )
+                            break
         except Exception:
             pass
 

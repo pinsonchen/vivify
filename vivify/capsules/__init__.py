@@ -14,7 +14,14 @@ Design goals:
 from __future__ import annotations
 
 from vivify.capsules.extractor import CapsuleExtractor
+from vivify.capsules.externalizer import CapabilityExternalizer, ExternalizationPlan
 from vivify.capsules.models import SkillCapsule
 from vivify.capsules.store import CapsuleStore
 
-__all__ = ["SkillCapsule", "CapsuleStore", "CapsuleExtractor"]
+__all__ = [
+    "SkillCapsule",
+    "CapsuleStore",
+    "CapsuleExtractor",
+    "CapabilityExternalizer",
+    "ExternalizationPlan",
+]

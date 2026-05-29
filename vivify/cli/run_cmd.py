@@ -15,6 +15,7 @@ from vivify.kernel.escalator import EscalationPolicy
 from vivify.kernel.health_monitor import HealthMonitor, HealthMonitorConfig
 from vivify.kernel.loop import Kernel, KernelConfig, KernelDeps
 from vivify.pr_mode.auto_merge import AutoMerge, AutoMergeConfig
+from vivify.pr_mode.isolation import IsolationConfig
 from vivify.pr_mode.pr_creator import PrCreator, PrCreatorConfig
 from vivify.pr_mode.worktree import WorktreeManager
 from vivify.probes.registry import build_default_registry
@@ -99,6 +100,15 @@ def _build_agent(cfg) -> QoderCliAgent:
     return QoderCliAgent(bin_cfg)
 
 
+def _build_isolation_config(cfg) -> IsolationConfig:
+    """Build IsolationConfig from the schema's pr.isolation section."""
+    iso = cfg.pr.isolation
+    return IsolationConfig(
+        enabled=iso.enabled,
+        extra_exclude_patterns=list(iso.extra_exclude_patterns),
+    )
+
+
 def run(args: argparse.Namespace) -> int:
     _load_instance_env()
     cfg = load_config(getattr(args, "config", None))
@@ -126,6 +136,7 @@ def run(args: argparse.Namespace) -> int:
         repo_root,
         branch_prefix=cfg.pr.branch_prefix,
         base_branch=cfg.pr.base_branch,
+        isolation_config=_build_isolation_config(cfg),
     )
     pr_creator = PrCreator(PrCreatorConfig(
         base_branch=cfg.pr.base_branch,

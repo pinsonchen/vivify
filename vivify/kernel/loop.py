@@ -65,7 +65,7 @@ from vivify.probes.rule_engine import RuleEngine
 from vivify.probes.runner import ProbeRunReport, aggregate_issues, run_probes
 from vivify.daemon.lock import InstanceLock
 from vivify.daemon.manager import DaemonManager  # 仅用于全局实例注册表
-from vivify.config.schema import BudgetLimitConfig, CapsuleConfig, DaemonConfig, DeployConfig, EpigeneticsConfig, GoalsConfig, HarnessConfig, IntelligenceConfig, KnowledgeGCConfig
+from vivify.config.schema import BudgetLimitConfig, CapsuleConfig, DaemonConfig, DeployConfig, EpigeneticsConfig, ExternalizationConfig, GoalsConfig, HarnessConfig, IntelligenceConfig, KnowledgeGCConfig, RewardConfig
 from vivify.kernel.token_budget import BudgetConfig, P53Suppressor, TokenBucket
 from vivify.deployers import DeployResult, get_deployer
 from vivify.intelligence.rca import RootCauseAnalyzer
@@ -73,9 +73,10 @@ from vivify.intelligence.trend_analyzer import TrendAnalyzer
 from vivify.knowledge.gc import GCConfig, KnowledgeGC
 from vivify.knowledge.maintainer import KnowledgeMaintainer
 from vivify.verifier.kpi_snapshot import KpiSnapshotVerifier
-from vivify.capsules import CapsuleExtractor, CapsuleStore, SkillCapsule
+from vivify.capsules import CapsuleExtractor, CapsuleStore, CapabilityExternalizer, SkillCapsule
 from vivify.intelligence.epigenetics import EpigeneticsEngine
 from vivify.intelligence.episodic_memory import EpisodicMemory
+from vivify.intelligence.reward_signals import RewardAggregator
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,7 @@ class KernelConfig:
     budget: BudgetLimitConfig = field(default_factory=BudgetLimitConfig)
     capsules: CapsuleConfig = field(default_factory=CapsuleConfig)
     knowledge_gc: KnowledgeGCConfig = field(default_factory=KnowledgeGCConfig)
+    reward: RewardConfig = field(default_factory=RewardConfig)
 
 
 @dataclass
@@ -289,6 +291,11 @@ class Kernel:
         self._capsule_extractor: Optional[CapsuleExtractor] = None
         self._init_capsules()
 
+        # ── Capability externalizer ────────────────────────────────────────
+        self._externalizer: Optional[CapabilityExternalizer] = None
+        self._externalization_round_counter: int = 0
+        self._init_externalizer()
+
         # ── Epigenetics engine ─────────────────────────────────────────────
         self._epigenetics: Optional[EpigeneticsEngine] = None
         self._init_epigenetics()
@@ -297,6 +304,10 @@ class Kernel:
         self._episodic_memory = EpisodicMemory(
             storage=deps.storage, window_days=7, max_episodes=3,
         )
+
+        # ── Multi-modal Reward Signal Aggregator ────────────────────────────
+        self._reward_aggregator: Optional[RewardAggregator] = None
+        self._init_reward_signals()
 
         # ── 信号处理：SIGTERM / SIGINT 触发优雅停止 ──────────────────────
         self._shutdown_requested = False
@@ -407,6 +418,59 @@ class Kernel:
             and self._sensor_engine is not None
         )
 
+    # ── Capability externalization helpers ──────────────────────────────
+    def _init_externalizer(self) -> None:
+        """Initialise the capability externalizer (best-effort)."""
+        ext_cfg: Optional[ExternalizationConfig] = getattr(self.config, "externalization", None)
+        if ext_cfg is None or not ext_cfg.enabled:
+            return
+        if self._capsule_store is None:
+            return
+        try:
+            output_dir = ext_cfg.output_dir
+            if not Path(output_dir).is_absolute():
+                output_dir = str(self.deps.repo_root / output_dir)
+            self._externalizer = CapabilityExternalizer(
+                project_root=self.deps.repo_root,
+                output_dir=output_dir,
+            )
+            logger.debug("Capability externalizer ready, output=%s", output_dir)
+        except Exception as e:  # pragma: no cover
+            logger.warning("Externalizer init failed: %s", e)
+            self._externalizer = None
+
+    def _maybe_externalize_capsules(self) -> None:
+        """Periodically check for promotion candidates and generate externalization plans.
+
+        Runs every ``check_interval_rounds`` rounds.
+        Generates files into ``.vivify/externalized/`` without modifying project files.
+        """
+        if self._externalizer is None or self._capsule_store is None:
+            return
+        ext_cfg: Optional[ExternalizationConfig] = getattr(self.config, "externalization", None)
+        if ext_cfg is None or not ext_cfg.enabled:
+            return
+
+        self._externalization_round_counter += 1
+        if self._externalization_round_counter < ext_cfg.check_interval_rounds:
+            return
+        self._externalization_round_counter = 0
+
+        try:
+            plans = self._externalizer.run(self._capsule_store)
+            if plans:
+                logger.info(
+                    "\u2728 %d capability(ies) externalized as native project abilities",
+                    len(plans),
+                )
+                for p in plans:
+                    logger.info(
+                        "  - %s → %s (%s)",
+                        p.capsule_title, p.target_type, p.file_path,
+                    )
+        except Exception as e:
+            logger.warning("Externalization pass failed: %s", e)
+
     # ── Skill Capsule helpers ────────────────────────────────────────
     def _init_capsules(self) -> None:
         """Initialise the skill-capsule store + extractor (best-effort)."""
@@ -506,6 +570,66 @@ class Kernel:
         except Exception as e:  # pragma: no cover
             logger.debug("capsule lookup failed: %s", e)
             return "", None
+
+    # ── Reward Signal helpers ──────────────────────────────────────────
+    def _init_reward_signals(self) -> None:
+        """Initialise the multi-modal reward signal aggregator (best-effort)."""
+        reward_cfg = getattr(self.config, "reward", None)
+        if reward_cfg is None or not getattr(reward_cfg, "enabled", True):
+            return
+        try:
+            weights = {
+                "correctness": getattr(reward_cfg, "correctness_weight", 0.40),
+                "efficiency": getattr(reward_cfg, "efficiency_weight", 0.20),
+                "stability": getattr(reward_cfg, "stability_weight", 0.25),
+                "elegance": getattr(reward_cfg, "elegance_weight", 0.15),
+            }
+            max_history = getattr(reward_cfg, "max_history", 100)
+            self._reward_aggregator = RewardAggregator(
+                weights=weights, max_history=max_history,
+            )
+            logger.info("Reward signal aggregator initialised (weights=%s)", weights)
+        except Exception as e:  # pragma: no cover
+            logger.warning("Reward signal init failed: %s", e)
+            self._reward_aggregator = None
+
+    def _reward_enabled(self) -> bool:
+        return self._reward_aggregator is not None
+
+    def _record_reward_signal(self, action_result: dict) -> None:
+        """Record a reward signal and feed back to capsule/epigenetics layers.
+
+        Called after a successful agent fix with metrics about the action outcome.
+        """
+        if not self._reward_enabled():
+            return
+        try:
+            signal = self._reward_aggregator.record_action_reward(action_result)
+            # Feed reward quality back to epigenetics: positive rewards upregulate
+            if self._epigenetics_enabled() and signal.category == "poor":
+                logger.info(
+                    "Reward signal poor (score=%.3f); consider strategy adjustment",
+                    signal.composite_score,
+                )
+        except Exception as e:  # pragma: no cover
+            logger.debug("Reward signal recording failed: %s", e)
+
+    def _log_reward_health(self) -> None:
+        """Log reward aggregator health metrics at end of round."""
+        if not self._reward_enabled():
+            return
+        try:
+            avg = self._reward_aggregator.get_recent_average()
+            trend = self._reward_aggregator.get_trend()
+            logger.info(
+                "Reward health: avg_composite=%.3f trend=%s | "
+                "C=%.3f E=%.3f S=%.3f G=%.3f",
+                avg["composite"], trend,
+                avg["correctness"], avg["efficiency"],
+                avg["stability"], avg["elegance"],
+            )
+        except Exception as e:  # pragma: no cover
+            logger.debug("Reward health logging failed: %s", e)
 
     def _record_capsule_outcome(self, capsule: Optional[SkillCapsule], success: bool) -> None:
         if capsule is None or not self._capsules_enabled():
@@ -765,6 +889,7 @@ class Kernel:
             self._maybe_run_health_monitor(report=report)
             self._maybe_capture_kpi_snapshot()
             self._maybe_run_trend_analysis()
+            self._maybe_externalize_capsules()
         except Exception as e:
             logger.exception("Kernel round failed: %s", e)
             report.duration_seconds = time.time() - t0
@@ -774,6 +899,9 @@ class Kernel:
 
         # ── P53 evaluation at end of round ────────────────────────────
         self._evaluate_p53()
+
+        # ── Log reward signal health ──────────────────────────────────
+        self._log_reward_health()
 
         # ── Log budget usage ──────────────────────────────────────────
         logger.info("Token budget: %s", self._token_bucket.usage_report)
@@ -1235,6 +1363,19 @@ class Kernel:
                 wt_path=wt.path,
                 base_ref=wt.base_ref,
             )
+            # Multi-modal reward signal: compute and record quality metrics.
+            diff_stats = self._get_diff_stats(wt.path, wt.base_ref)
+            changed_files = self._get_changed_files(wt.path, wt.base_ref)
+            self._record_reward_signal({
+                "action_id": report.run_id,
+                "success": True,
+                "agent_turns": getattr(agent_result, "turns", 30),
+                "diff_lines_added": diff_stats.get("lines_added", 0),
+                "diff_lines_removed": diff_stats.get("lines_deleted", 0),
+                "files_changed": len(changed_files),
+                "new_dependencies": 0,
+                "lint_warnings_delta": 0,
+            })
             return True
         except Exception as e:
             logger.exception("agent fix failed for %s: %s", issue.hash, e)
