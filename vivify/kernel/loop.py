@@ -40,6 +40,7 @@ from vivify.interfaces.goal_decomposer import RepoState
 from vivify.interfaces.probe import Probe, ProbeContext
 from vivify.interfaces.storage import StorageProvider
 from vivify.kernel.code_hash import compute_code_hash
+from vivify.kernel.workspace_health import check_workspace_health
 from vivify.kernel.dispatch import (
     DispatchPolicy,
     DispatchState,
@@ -63,12 +64,14 @@ from vivify.probes.rule_engine import RuleEngine
 from vivify.probes.runner import ProbeRunReport, aggregate_issues, run_probes
 from vivify.daemon.lock import InstanceLock
 from vivify.daemon.manager import DaemonManager  # 仅用于全局实例注册表
-from vivify.config.schema import DaemonConfig, DeployConfig, GoalsConfig, HarnessConfig, IntelligenceConfig
+from vivify.config.schema import BudgetLimitConfig, CapsuleConfig, DaemonConfig, DeployConfig, GoalsConfig, HarnessConfig, IntelligenceConfig
+from vivify.kernel.token_budget import BudgetConfig, P53Suppressor, TokenBucket
 from vivify.deployers import DeployResult, get_deployer
 from vivify.intelligence.rca import RootCauseAnalyzer
 from vivify.intelligence.trend_analyzer import TrendAnalyzer
 from vivify.knowledge.maintainer import KnowledgeMaintainer
 from vivify.verifier.kpi_snapshot import KpiSnapshotVerifier
+from vivify.capsules import CapsuleExtractor, CapsuleStore, SkillCapsule
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +104,8 @@ class KernelConfig:
     wiki_path: str = ""  # wiki 路径（知识图谱维护用）
     intelligence: IntelligenceConfig = field(default_factory=IntelligenceConfig)
     harness: HarnessConfig = field(default_factory=HarnessConfig)
+    budget: BudgetLimitConfig = field(default_factory=BudgetLimitConfig)
+    capsules: CapsuleConfig = field(default_factory=CapsuleConfig)
 
 
 @dataclass
@@ -232,12 +237,29 @@ class Kernel:
         # 传递 RCA 上下文到 _try_agent_fix：issue.hash -> formatted prompt context
         self._rca_contexts: dict[str, str] = {}
 
+        # ── Token Budget + P53 Suppressor ───────────────────────────────
+        _budget_cfg = BudgetConfig(
+            daily_limit=self.config.budget.daily_limit,
+            per_cycle_limit=self.config.budget.per_cycle_limit,
+            window_seconds=self.config.budget.window_seconds,
+            pr_frequency_threshold=self.config.budget.pr_frequency_threshold,
+            backlog_threshold=self.config.budget.backlog_threshold,
+            cooldown_multiplier=self.config.budget.cooldown_multiplier,
+        )
+        self._token_bucket = TokenBucket(config=_budget_cfg)
+        self._p53 = P53Suppressor(config=_budget_cfg)
+
         # ── Harness (PEV) 初始化：sensors / doom-loop / risk / guides ───────
         self._sensor_engine = None
         self._doom_detector = None
         self._risk_scorer = None
         self._guides_manager = None
         self._init_harness()
+
+        # ── Skill Capsule store + extractor ───────────────────────────────
+        self._capsule_store: Optional[CapsuleStore] = None
+        self._capsule_extractor: Optional[CapsuleExtractor] = None
+        self._init_capsules()
 
         # ── 信号处理：SIGTERM / SIGINT 触发优雅停止 ──────────────────────
         self._shutdown_requested = False
@@ -347,6 +369,113 @@ class Kernel:
             and self.config.harness.enabled
             and self._sensor_engine is not None
         )
+
+    # ── Skill Capsule helpers ────────────────────────────────────────
+    def _init_capsules(self) -> None:
+        """Initialise the skill-capsule store + extractor (best-effort)."""
+        cfg = getattr(self.config, "capsules", None)
+        if cfg is None or not getattr(cfg, "enabled", False):
+            return
+        try:
+            capsules_dir = Path(cfg.capsules_dir)
+            if not capsules_dir.is_absolute():
+                capsules_dir = self.deps.repo_root / capsules_dir
+            self._capsule_store = CapsuleStore(capsules_dir)
+            self._capsule_extractor = CapsuleExtractor()
+            logger.debug("Skill capsule store ready at %s", capsules_dir)
+        except Exception as e:  # pragma: no cover
+            logger.warning("Capsule subsystem init failed: %s", e)
+            self._capsule_store = None
+            self._capsule_extractor = None
+
+    def _capsules_enabled(self) -> bool:
+        return self._capsule_store is not None and self._capsule_extractor is not None
+
+    def _lookup_capsule_hint(self, issue: Issue) -> tuple[str, Optional[SkillCapsule]]:
+        """Return the prompt hint + matching capsule for an issue, if any."""
+        if not self._capsules_enabled():
+            return "", None
+        try:
+            issue_text = " ".join(
+                [issue.title or "", issue.description or "", issue.category or ""]
+            )
+            cap = self._capsule_store.find_matching(issue.source_probe, issue_text)
+            if cap is None:
+                return "", None
+            return cap.prompt_template, cap
+        except Exception as e:  # pragma: no cover
+            logger.debug("capsule lookup failed: %s", e)
+            return "", None
+
+    def _record_capsule_outcome(self, capsule: Optional[SkillCapsule], success: bool) -> None:
+        if capsule is None or not self._capsules_enabled():
+            return
+        try:
+            self._capsule_store.record_usage(capsule.capsule_id, success)
+        except Exception as e:  # pragma: no cover
+            logger.debug("capsule record_usage failed: %s", e)
+
+    def _maybe_extract_capsule(
+        self,
+        *,
+        run_id: str,
+        issue: Issue,
+        output: str,
+        pr_url: Optional[str],
+        commit_hash: Optional[str],
+        existing_capsule: Optional[SkillCapsule],
+        wt_path: Optional[Path] = None,
+        base_ref: Optional[str] = None,
+    ) -> None:
+        """Distil a new capsule from a successful agent fix.
+
+        Skipped when an existing capsule was already used (its usage counter
+        is enough), when the subsystem is disabled, or on any failure.
+        """
+        if not self._capsules_enabled() or existing_capsule is not None:
+            return
+        try:
+            action_log = {
+                "run_id": run_id,
+                "action_type": "heal",
+                "status": "success",
+                "category": issue.category,
+                "title": issue.title,
+                "result_summary": (output or "")[-1000:],
+                "details": {
+                    "source_probe": issue.source_probe,
+                    "pr_url": pr_url,
+                    "commit_hash": commit_hash,
+                },
+            }
+            issue_dict = issue.to_dict() if hasattr(issue, "to_dict") else {
+                "title": issue.title,
+                "description": issue.description,
+                "category": issue.category,
+                "source_probe": issue.source_probe,
+            }
+            diff_text = ""
+            if wt_path is not None and base_ref:
+                try:
+                    import subprocess
+                    res = subprocess.run(
+                        ["git", "diff", base_ref, "HEAD"],
+                        cwd=str(wt_path), capture_output=True, text=True, timeout=15,
+                    )
+                    if res.returncode == 0:
+                        diff_text = res.stdout[:20000]
+                except Exception:  # pragma: no cover
+                    diff_text = ""
+            cap = self._capsule_extractor.extract_from_fix(
+                action_log, issue_dict, diff_text,
+            )
+            self._capsule_store.save(cap)
+            logger.info(
+                "Skill capsule extracted: id=%s probe=%s category=%s",
+                cap.capsule_id[:8], cap.probe_id, cap.issue_category,
+            )
+        except Exception as e:  # pragma: no cover
+            logger.debug("capsule extraction failed: %s", e)
 
     def _get_changed_files(self, worktree_path: Path, base_ref: str) -> list[str]:
         """Return the list of files changed in the worktree relative to ``base_ref``.
@@ -505,6 +634,20 @@ class Kernel:
         run_id = f"run-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
         report = RoundReport(run_id=run_id, round_num=self._round_num)
         t0 = time.time()
+
+        # ── Token budget: reset per-cycle counter ─────────────────────
+        self._token_bucket.reset_cycle()
+
+        # ── P53 check: if suppressed, skip entire round ───────────────
+        if self._token_bucket.is_suppressed:
+            logger.warning(
+                "p53 suppression active, skipping round %d: %s",
+                self._round_num, self._token_bucket.suppression_reason,
+            )
+            report.duration_seconds = time.time() - t0
+            report.code_hash = self._current_code_hash()
+            return report
+
         try:
             # Knowledge graph incremental maintenance (rate-limited, non-blocking)
             self._maybe_update_knowledge()
@@ -525,7 +668,57 @@ class Kernel:
         finally:
             report.duration_seconds = report.duration_seconds or (time.time() - t0)
             report.code_hash = self._current_code_hash()
+
+        # ── P53 evaluation at end of round ────────────────────────────
+        self._evaluate_p53()
+
+        # ── Log budget usage ──────────────────────────────────────────
+        logger.info("Token budget: %s", self._token_bucket.usage_report)
+
         return report
+
+    # ── p53 evaluation ─────────────────────────────────────────────────────
+    def _evaluate_p53(self) -> None:
+        """Collect proliferation metrics and evaluate p53 suppression."""
+        try:
+            metrics: dict = {
+                "pr_count_24h": 0,
+                "pending_features": 0,
+                "failed_fixes_24h": 0,
+            }
+            # Count recent PRs and failures from action logs
+            try:
+                logs = self.deps.storage.list_action_logs(limit=200)
+                pr_count = sum(
+                    1 for log in logs
+                    if getattr(log, 'action_type', '') == 'heal'
+                    and getattr(log, 'status', '') == 'success'
+                    and getattr(log, 'pr_url', None)
+                )
+                failed_count = sum(
+                    1 for log in logs
+                    if getattr(log, 'action_type', '') == 'heal'
+                    and getattr(log, 'status', '') == 'failed'
+                )
+                metrics["pr_count_24h"] = pr_count
+                metrics["failed_fixes_24h"] = failed_count
+            except Exception:  # pragma: no cover
+                pass
+            # Count pending features
+            try:
+                pending: list = []
+                for status in ("pending", "approved"):
+                    pending.extend(self.deps.storage.list_features(status=status, limit=100))
+                metrics["pending_features"] = len(pending)
+            except Exception:  # pragma: no cover
+                pass
+
+            reason = self._p53.evaluate(metrics)
+            if reason:
+                self._token_bucket.suppress(reason)
+                logger.warning("p53 suppression activated: %s", reason)
+        except Exception as e:  # pragma: no cover
+            logger.debug("p53 evaluation failed: %s", e)
 
     # ── stage 0: knowledge maintenance ─────────────────────────────────────
     def _maybe_update_knowledge(self) -> None:
@@ -720,7 +913,13 @@ class Kernel:
                 logger.info("agent budget exhausted; deferring %s", issue.hash)
                 report.issues_skipped += 1
                 continue
+            # Token budget gate: check before agent call
+            if not self._token_bucket.can_consume():
+                logger.info("token budget exhausted; deferring %s", issue.hash)
+                report.issues_skipped += 1
+                continue
             if self._try_agent_fix(issue, report=report):
+                self._token_bucket.consume()
                 self._tracker.reset(issue.hash)
                 agent_budget -= 1
             else:
@@ -766,6 +965,18 @@ class Kernel:
         return success
 
     def _try_agent_fix(self, issue: Issue, *, report: RoundReport) -> bool:
+        # Pre-flight workspace health check: abort early if workspace is unhealthy.
+        health = check_workspace_health(self.deps.repo_root)
+        if not health.passed:
+            logger.warning(
+                "Pre-flight check failed for %s: %s", issue.hash, health.summary,
+            )
+            self._log_issue_action(
+                report.run_id, "heal", "skipped", issue,
+                summary=f"pre-flight failed: {health.summary}",
+            )
+            return False
+
         # Doom-loop pre-check: skip when the same fingerprint repeats too often.
         if self._harness_enabled() and self._doom_detector is not None:
             try:
@@ -791,6 +1002,12 @@ class Kernel:
         slug = f"{issue.category}-{issue.hash}"
         wt = self.deps.worktrees.create(slug)
         t0 = time.time()
+        capsule_hint, matched_capsule = self._lookup_capsule_hint(issue)
+        if matched_capsule is not None:
+            logger.info(
+                "Skill capsule fast-path applied: id=%s effectiveness=%.2f",
+                matched_capsule.capsule_id[:8], matched_capsule.effectiveness,
+            )
         try:
             history = load_history(self.deps.storage, "fix_issue")
             rca_hint = self._rca_contexts.get(issue.hash, "")
@@ -799,6 +1016,7 @@ class Kernel:
                 recent_history=history,
                 remediation_hint=rca_hint,
                 enable_self_improve=self.config.enable_self_improve_prompt,
+                capsule_hint=capsule_hint,
             )
             agent_result = self.deps.agent.heal(
                 prompt,
@@ -824,6 +1042,7 @@ class Kernel:
                         summary="harness verification failed after retries",
                         duration=time.time() - t0,
                     )
+                    self._record_capsule_outcome(matched_capsule, success=False)
                     return False
 
             quality = run_quality_checks(wt.path, base_ref=wt.base_ref)
@@ -833,6 +1052,7 @@ class Kernel:
                     summary=f"quality failed: {quality.summary}",
                     duration=time.time() - t0,
                 )
+                self._record_capsule_outcome(matched_capsule, success=False)
                 return False
 
             decision = classify_worktree(wt.path, base_ref=wt.base_ref)
@@ -871,6 +1091,18 @@ class Kernel:
                 duration=time.time() - t0,
                 pr_url=pr.url, commit_hash=commit.get("commit_hash"),
             )
+            # Skill capsule bookkeeping: record usage and/or distil a new one.
+            self._record_capsule_outcome(matched_capsule, success=True)
+            self._maybe_extract_capsule(
+                run_id=report.run_id,
+                issue=issue,
+                output=output,
+                pr_url=pr.url,
+                commit_hash=commit.get("commit_hash"),
+                existing_capsule=matched_capsule,
+                wt_path=wt.path,
+                base_ref=wt.base_ref,
+            )
             return True
         except Exception as e:
             logger.exception("agent fix failed for %s: %s", issue.hash, e)
@@ -879,6 +1111,7 @@ class Kernel:
                 summary=f"exception: {e!r}",
                 duration=time.time() - t0,
             )
+            self._record_capsule_outcome(matched_capsule, success=False)
             return False
         finally:
             try:
@@ -1004,8 +1237,13 @@ class Kernel:
 
         budget = self.config.max_features_per_round
         for fr in pending[:budget]:
+            # Token budget gate for feature pipeline
+            if not self._token_bucket.can_consume():
+                logger.info("token budget exhausted; deferring feature #%s", fr.id)
+                break
             try:
                 fr_report = pipeline.run(fr, round_num=report.round_num)
+                self._token_bucket.consume()
                 report.feature_reports.append(fr_report)
                 report.features_processed += 1
             except Exception as e:
@@ -1083,6 +1321,18 @@ class Kernel:
             (fr.title or "").strip().lower() for fr in open_features
         }
 
+        # Task #111: 获取真实 KPI 快照和已部署特性，消除分解器感知盲区
+        try:
+            recent_snapshots = self.deps.storage.get_recent_kpi_snapshots(days=7)
+        except Exception as e:  # pragma: no cover
+            logger.debug("get_recent_kpi_snapshots failed: %s", e)
+            recent_snapshots = []
+        try:
+            deployed_features = self.deps.storage.get_deployed_features(days=30)
+        except Exception as e:  # pragma: no cover
+            logger.debug("get_deployed_features failed: %s", e)
+            deployed_features = []
+
         repo_state = RepoState(
             repo_root=str(self.deps.repo_root),
             default_branch=self.config.default_branch,
@@ -1101,7 +1351,8 @@ class Kernel:
         for goal in doc.goals:
             try:
                 specs = self._goal_decomposer.decompose(
-                    goal, repo_state, open_features, recent_snapshots=[],
+                    goal, repo_state, open_features, recent_snapshots,
+                    deployed_features=deployed_features,
                 )
             except Exception as e:
                 any_failure = True
@@ -1148,7 +1399,11 @@ class Kernel:
             return ""
 
     def _store_feature_request(self, spec: FeatureSpec) -> Optional[int]:
-        """将 FeatureSpec 写入 feature_requests 表，返回新 id 或 None。"""
+        """将 FeatureSpec 写入 feature_requests 表，返回新 id 或 None。
+
+        Task #111: 目标分解产生的子任务自动进入 approved 状态，
+        跳过评估阶段直接进入开发。
+        """
         try:
             fr = FeatureRequest(
                 title=spec.title,
@@ -1158,6 +1413,7 @@ class Kernel:
                 priority=spec.priority,
                 verification_method=spec.verification_method,
                 idea_id=getattr(spec, "idea_id", None),
+                status="approved",  # auto-approve goal-decomposed features
             )
             return self.deps.storage.create_feature(fr)
         except Exception as e:  # pragma: no cover

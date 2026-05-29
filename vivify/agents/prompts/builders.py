@@ -45,14 +45,26 @@ def build_fix_issue(
     remediation_hint: str = "",
     auth_block: Optional[str] = None,
     enable_self_improve: bool = False,
+    capsule_hint: str = "",
 ) -> str:
-    """Prompt for fixing an :class:`Issue` the direct-fix path could not handle."""
+    """Prompt for fixing an :class:`Issue` the direct-fix path could not handle.
+
+    ``capsule_hint`` is an optional fast-path snippet sourced from the skill
+    capsule store. When non-empty it is appended to ``remediation_hint`` so
+    the agent sees the prior successful strategy alongside any RCA context.
+    """
+    combined_hint = remediation_hint or ""
+    if capsule_hint:
+        if combined_hint:
+            combined_hint = combined_hint.rstrip() + "\n\n" + capsule_hint
+        else:
+            combined_hint = capsule_hint
     return _render(
         "fix_issue.md.j2",
         issue=issue,
         workspace=workspace,
         recent_history=recent_history,
-        remediation_hint=remediation_hint,
+        remediation_hint=combined_hint,
         auth_block=auth_block or "",
         git_pr_snippet=snippets.GIT_PR_SNIPPET,
         next_steps_snippet=snippets.NEXT_STEPS_SNIPPET,
@@ -120,6 +132,7 @@ def build_goal_decompose(
     max_features: int = 3,
     existing_features: Sequence[dict] = (),
     kpi_snapshots: Sequence[dict] = (),
+    deployed_features: str = "",
 ) -> str:
     """Prompt for breaking a :class:`Goal` into :class:`FeatureSpec`s."""
     return _render(
@@ -132,6 +145,7 @@ def build_goal_decompose(
         max_features=int(max_features),
         existing_features=existing_features,
         kpi_snapshots=kpi_snapshots,
+        deployed_features=deployed_features,
     )
 
 

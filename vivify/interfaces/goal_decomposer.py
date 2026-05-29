@@ -50,6 +50,7 @@ class GoalDecomposer(ABC):
         repo_state: RepoState,
         open_features: Sequence[FeatureRequest],
         recent_snapshots: Sequence[KpiSnapshot],
+        deployed_features: Sequence[FeatureRequest] = (),
     ) -> List[FeatureSpec]:
         """Propose new features for ``goal``.
 
@@ -58,6 +59,8 @@ class GoalDecomposer(ABC):
         * Skip the goal entirely when its KPIs are already satisfied.
         * De-duplicate against ``open_features`` (titles + descriptions) so we
           don't churn out the same feature every cycle.
+        * De-duplicate against ``deployed_features`` to avoid re-proposing
+          features that have already been deployed or verified.
         * Cap the number of features returned (see
           ``goals.max_features_per_decompose`` in config) to bound cost.
         """

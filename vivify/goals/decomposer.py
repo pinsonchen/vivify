@@ -118,6 +118,16 @@ def _format_recent_snapshots(snapshots: Sequence[KpiSnapshot]) -> str:
     return "\n".join(lines)
 
 
+def _format_deployed_features(deployed: Sequence[FeatureRequest]) -> str:
+    """Format deployed features as context for the decomposer prompt."""
+    if not deployed:
+        return "(none)"
+    lines = []
+    for fr in deployed[:30]:
+        lines.append(f"- #{fr.id} [{fr.status}] {fr.title}")
+    return "\n".join(lines)
+
+
 class AgentGoalDecomposer(GoalDecomposer):
     """Default decomposer that delegates the LLM work to a :class:`CodingAgent`."""
 
@@ -216,6 +226,7 @@ class AgentGoalDecomposer(GoalDecomposer):
         repo_state: RepoState,
         open_features: Sequence[FeatureRequest],
         recent_snapshots: Sequence[KpiSnapshot],
+        deployed_features: Sequence[FeatureRequest] = (),
     ) -> List[FeatureSpec]:
         # ── KPI 达成度停止条件 ─────────────────────────────────────────────
         max_features = self.config.max_features_per_decompose
@@ -252,6 +263,7 @@ class AgentGoalDecomposer(GoalDecomposer):
             max_features=max_features,
             existing_features=existing_features,
             kpi_snapshots=kpi_snapshots_db,
+            deployed_features=_format_deployed_features(deployed_features),
         )
         result = self.agent.heal(
             prompt,
@@ -270,17 +282,20 @@ class AgentGoalDecomposer(GoalDecomposer):
 
         specs: List[FeatureSpec] = []
         existing_titles = [fr.title for fr in open_features]
+        # Task #111: also include deployed feature titles for dedup
+        deployed_titles = [fr.title for fr in deployed_features]
+        all_dedup_titles = existing_titles + deployed_titles
         for raw in raw_specs[:max_features]:
             if not isinstance(raw, dict):
                 continue
             spec = _spec_from_dict(raw, parent_goal=goal.name)
             if spec is None:
                 continue
-            if is_duplicate(spec.title, existing_titles,
+            if is_duplicate(spec.title, all_dedup_titles,
                             threshold=self.config.dedupe_threshold):
                 logger.info("decompose: dropping dup title '%s'", spec.title)
                 continue
-            existing_titles.append(spec.title)
+            all_dedup_titles.append(spec.title)
             specs.append(spec)
         return specs
 

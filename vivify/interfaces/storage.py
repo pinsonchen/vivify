@@ -8,7 +8,7 @@ and KPI snapshots through this single interface. Default implementation is SQLit
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from vivify.models.feature import FeatureRequest, FeatureStatus
@@ -77,3 +77,20 @@ class StorageProvider(ABC):
     def write_snapshot(self, snap: KpiSnapshot) -> int: ...
     @abstractmethod
     def read_snapshots(self, since: datetime) -> list[KpiSnapshot]: ...
+
+    # ── goal decompose awareness ──
+    def get_recent_kpi_snapshots(self, days: int = 7) -> list[KpiSnapshot]:
+        """Return KPI snapshots from the last *days* days.
+
+        Default implementation delegates to :meth:`read_snapshots`.
+        """
+        since = datetime.now(tz=timezone.utc) - timedelta(days=days)
+        return self.read_snapshots(since)
+
+    def get_deployed_features(self, days: int = 30) -> list[FeatureRequest]:
+        """Return features deployed/verified within the last *days* days.
+
+        Subclasses should override for efficiency; the default returns an
+        empty list (backward-compatible no-op).
+        """
+        return []

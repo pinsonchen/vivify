@@ -255,6 +255,27 @@ class IntelligenceConfig(BaseModel):
     knowledge_history_injection: bool = True  # 注入历史经验到修复 prompt
 
 
+class BudgetLimitConfig(BaseModel):
+    """Token budget — API call rate limiting and p53 tumor suppression."""
+
+    daily_limit: int = 100               # 每日 API 调用硬限
+    per_cycle_limit: int = 10            # 每轮循环最大调用数
+    window_seconds: int = 86400          # 时间窗口（默认 24h）
+    pr_frequency_threshold: int = 10     # 24h 内 PR 数超过此值 → p53 降频
+    backlog_threshold: int = 20          # 待处理 FR 积压超过此值 → p53 降频
+    cooldown_multiplier: float = 2.0     # 降频时循环间隔倍增系数
+
+
+class CapsuleConfig(BaseModel):
+    """Skill capsule (fix-experience reuse) configuration."""
+
+    enabled: bool = True
+    capsules_dir: str = ".vivify/capsules"
+    promote_threshold: int = 3      # 成功 N 次后建议提升
+    archive_threshold: int = 5      # 成功 N 次后归档
+    min_effectiveness: float = 0.7  # 最低有效率
+
+
 class HarnessConfig(BaseModel):
     """Project harness configuration for PEV loop."""
 
@@ -328,12 +349,16 @@ class VivifyConfig(BaseModel):
     project: ProjectConfig = Field(default_factory=ProjectConfig)
     intelligence: IntelligenceConfig = Field(default_factory=IntelligenceConfig)
     harness: HarnessConfig = Field(default_factory=HarnessConfig)
+    budget: BudgetLimitConfig = Field(default_factory=BudgetLimitConfig)
+    capsules: CapsuleConfig = Field(default_factory=CapsuleConfig)
     rules: List[dict] = Field(default_factory=list)  # 复合信号规则配置
 
 
 __all__ = [
     "AgentConfig",
     "AgentCostModel",
+    "BudgetLimitConfig",
+    "CapsuleConfig",
     "DeployConfig",
     "VivifyConfig",
     "DaemonConfig",

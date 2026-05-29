@@ -34,6 +34,7 @@ from vivify.agents.prompts import builders, parsers
 from vivify.interfaces.agent import CodingAgent
 from vivify.interfaces.storage import StorageProvider
 from vivify.kernel.feature_states import FeatureStateMachine, InvalidTransitionError
+from vivify.kernel.workspace_health import check_workspace_health
 from vivify.models.agent_result import AgentResult
 from vivify.models.feature import FeatureRequest
 from vivify.models.snapshot import ActionLog, KnowledgeEntry
@@ -243,6 +244,23 @@ class FeaturePipeline:
         round_num: int,
     ) -> None:
         start = time.time()
+
+        # Pre-flight workspace health check
+        health = check_workspace_health(self.worktrees.repo_root)
+        if not health.passed:
+            logger.warning(
+                "Pre-flight check failed for feature #%s: %s",
+                feature.id, health.summary,
+            )
+            self._log_action(
+                round_num=round_num, action_type="feature_develop",
+                status="skipped", feature=feature,
+                summary=f"pre-flight failed: {health.summary}",
+                duration=time.time() - start,
+            )
+            report.status = feature.status  # keep current status unchanged
+            return
+
         slug = feature.title or f"feature-{feature.id}"
         wt = self.worktrees.create(slug)
         result: Optional[AgentResult] = None

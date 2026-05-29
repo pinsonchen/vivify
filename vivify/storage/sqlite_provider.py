@@ -591,6 +591,28 @@ class SqliteStorageProvider(StorageProvider):
                     continue
         return series
 
+    # ── goal decompose awareness ──
+    def get_recent_kpi_snapshots(self, days: int = 7) -> list[KpiSnapshot]:
+        """Return KPI snapshots from the last *days* days."""
+        from datetime import timedelta
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+        return self.read_snapshots(since)
+
+    def get_deployed_features(self, days: int = 30) -> list["FeatureRequest"]:
+        """Return features in deployed/verified status updated within the last *days* days."""
+        from datetime import timedelta
+        since_iso = _to_iso(datetime.now(timezone.utc) - timedelta(days=days))
+        sql = """
+            SELECT * FROM feature_requests
+            WHERE status IN ('deployed', 'verified')
+              AND updated_at >= ?
+            ORDER BY id DESC
+            LIMIT 200
+        """
+        with self._guarded() as conn:
+            rows = conn.execute(sql, (since_iso,)).fetchall()
+        return [self._row_to_feature(r) for r in rows if r]
+
     # ── internals ──
     def _guarded(self) -> "_GuardedConnection":
         if self._conn is None:

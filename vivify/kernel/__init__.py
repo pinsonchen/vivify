@@ -22,8 +22,10 @@ from vivify.kernel.health_monitor import (
 )
 from vivify.kernel.loop import Kernel, KernelConfig, KernelDeps, RoundReport
 from vivify.kernel.safe_restart import safe_restart
+from vivify.kernel.token_budget import BudgetConfig, P53Suppressor, TokenBucket
 
 __all__ = [
+    "BudgetConfig",
     "compute_code_hash",
     "DispatchPolicy",
     "DispatchState",
@@ -39,8 +41,10 @@ __all__ = [
     "Kernel",
     "KernelConfig",
     "KernelDeps",
+    "P53Suppressor",
     "Regression",
     "RoundReport",
+    "TokenBucket",
     "detect_regressions",
     "mark_attempted",
     "safe_restart",
