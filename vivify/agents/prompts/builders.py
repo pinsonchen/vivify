@@ -46,12 +46,16 @@ def build_fix_issue(
     auth_block: Optional[str] = None,
     enable_self_improve: bool = False,
     capsule_hint: str = "",
+    episodic_context: str = "",
 ) -> str:
     """Prompt for fixing an :class:`Issue` the direct-fix path could not handle.
 
     ``capsule_hint`` is an optional fast-path snippet sourced from the skill
     capsule store. When non-empty it is appended to ``remediation_hint`` so
     the agent sees the prior successful strategy alongside any RCA context.
+
+    ``episodic_context`` is an optional block from L2 Episodic Memory
+    containing recent similar fix records. It is appended after capsule_hint.
     """
     combined_hint = remediation_hint or ""
     if capsule_hint:
@@ -59,6 +63,11 @@ def build_fix_issue(
             combined_hint = combined_hint.rstrip() + "\n\n" + capsule_hint
         else:
             combined_hint = capsule_hint
+    if episodic_context:
+        if combined_hint:
+            combined_hint = combined_hint.rstrip() + "\n\n" + episodic_context
+        else:
+            combined_hint = episodic_context
     return _render(
         "fix_issue.md.j2",
         issue=issue,

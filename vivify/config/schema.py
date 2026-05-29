@@ -276,6 +276,39 @@ class CapsuleConfig(BaseModel):
     min_effectiveness: float = 0.7  # 最低有效率
 
 
+class KnowledgeGCConfig(BaseModel):
+    """Knowledge graph garbage collection configuration."""
+
+    enabled: bool = True
+    max_nodes: int = 500               # 图谱节点硬限
+    max_modules: int = 50              # 模块卡片硬限
+    stale_days: int = 30               # N 天未被引用视为 stale
+    archive_after_days: int = 60       # N 天后归档
+    delete_after_days: int = 90        # N 天后删除
+    min_access_count: int = 2          # 最低引用次数（低于此值加速老化）
+    gc_interval_hours: int = 24        # GC 执行间隔
+
+
+class EpigeneticsConfig(BaseModel):
+    """Epigenetics layer — probe expression regulation based on environment."""
+
+    enabled: bool = True
+    plasticity_window: int = 50        # 前 N 轮为高可塑期
+    imprint_threshold: int = 3         # 可塑期内命中 N 次形成印记
+    min_miss_streak: int = 10          # 连续无命中 N 轮才开始下调
+
+
+class VerificationConfig(BaseModel):
+    """Data-driven verification thresholds (Task #119)."""
+
+    data_driven_enabled: bool = True
+    min_quality_delta: float = -0.1
+    allow_test_regression: bool = False
+    allow_lint_regression: bool = True
+    confidence_threshold: float = 0.7
+    collect_baseline: bool = True    # 开发前是否自动采集 baseline
+
+
 class HarnessConfig(BaseModel):
     """Project harness configuration for PEV loop."""
 
@@ -349,8 +382,11 @@ class VivifyConfig(BaseModel):
     project: ProjectConfig = Field(default_factory=ProjectConfig)
     intelligence: IntelligenceConfig = Field(default_factory=IntelligenceConfig)
     harness: HarnessConfig = Field(default_factory=HarnessConfig)
+    verification: VerificationConfig = Field(default_factory=VerificationConfig)
     budget: BudgetLimitConfig = Field(default_factory=BudgetLimitConfig)
     capsules: CapsuleConfig = Field(default_factory=CapsuleConfig)
+    knowledge_gc: KnowledgeGCConfig = Field(default_factory=KnowledgeGCConfig)
+    epigenetics: EpigeneticsConfig = Field(default_factory=EpigeneticsConfig)
     rules: List[dict] = Field(default_factory=list)  # 复合信号规则配置
 
 
@@ -359,6 +395,7 @@ __all__ = [
     "AgentCostModel",
     "BudgetLimitConfig",
     "CapsuleConfig",
+    "EpigeneticsConfig",
     "DeployConfig",
     "VivifyConfig",
     "DaemonConfig",
@@ -369,6 +406,7 @@ __all__ = [
     "GoalsConfig",
     "HarnessConfig",
     "IntelligenceConfig",
+    "KnowledgeGCConfig",
     "KpiMonitorConfig",
     "PrConfig",
     "ProbesConfig",
@@ -378,4 +416,5 @@ __all__ = [
     "SelfGrowthConfig",
     "SqliteConfig",
     "StorageConfig",
+    "VerificationConfig",
 ]

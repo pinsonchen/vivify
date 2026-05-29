@@ -65,7 +65,7 @@ from vivify.probes.rule_engine import RuleEngine
 from vivify.probes.runner import ProbeRunReport, aggregate_issues, run_probes
 from vivify.daemon.lock import InstanceLock
 from vivify.daemon.manager import DaemonManager  # 仅用于全局实例注册表
-from vivify.config.schema import BudgetLimitConfig, CapsuleConfig, DaemonConfig, DeployConfig, GoalsConfig, HarnessConfig, IntelligenceConfig, KnowledgeGCConfig
+from vivify.config.schema import BudgetLimitConfig, CapsuleConfig, DaemonConfig, DeployConfig, EpigeneticsConfig, GoalsConfig, HarnessConfig, IntelligenceConfig, KnowledgeGCConfig
 from vivify.kernel.token_budget import BudgetConfig, P53Suppressor, TokenBucket
 from vivify.deployers import DeployResult, get_deployer
 from vivify.intelligence.rca import RootCauseAnalyzer
@@ -74,6 +74,8 @@ from vivify.knowledge.gc import GCConfig, KnowledgeGC
 from vivify.knowledge.maintainer import KnowledgeMaintainer
 from vivify.verifier.kpi_snapshot import KpiSnapshotVerifier
 from vivify.capsules import CapsuleExtractor, CapsuleStore, SkillCapsule
+from vivify.intelligence.epigenetics import EpigeneticsEngine
+from vivify.intelligence.episodic_memory import EpisodicMemory
 
 logger = logging.getLogger(__name__)
 
@@ -287,6 +289,15 @@ class Kernel:
         self._capsule_extractor: Optional[CapsuleExtractor] = None
         self._init_capsules()
 
+        # ── Epigenetics engine ─────────────────────────────────────────────
+        self._epigenetics: Optional[EpigeneticsEngine] = None
+        self._init_epigenetics()
+
+        # ── L2 Episodic Memory ───────────────────────────────────────────
+        self._episodic_memory = EpisodicMemory(
+            storage=deps.storage, window_days=7, max_episodes=3,
+        )
+
         # ── 信号处理：SIGTERM / SIGINT 触发优雅停止 ──────────────────────
         self._shutdown_requested = False
         try:
@@ -416,6 +427,69 @@ class Kernel:
 
     def _capsules_enabled(self) -> bool:
         return self._capsule_store is not None and self._capsule_extractor is not None
+
+    # ── Epigenetics helpers ────────────────────────────────────────────────
+    def _init_epigenetics(self) -> None:
+        """Initialise the epigenetics engine (best-effort)."""
+        cfg = getattr(self.config, "epigenetics", None)
+        if cfg is None or not getattr(cfg, "enabled", False):
+            return
+        try:
+            state_dir = Path(self.config.state_dir)
+            if not state_dir.is_absolute():
+                state_dir = self.deps.repo_root / state_dir
+            self._epigenetics = EpigeneticsEngine(
+                vivify_dir=state_dir,
+                plasticity_window=cfg.plasticity_window,
+                imprint_threshold=cfg.imprint_threshold,
+                min_miss_streak=cfg.min_miss_streak,
+            )
+            logger.info(
+                "Epigenetics engine initialised: %s", self._epigenetics.get_status(),
+            )
+        except Exception as e:  # pragma: no cover
+            logger.warning("Epigenetics init failed: %s", e)
+            self._epigenetics = None
+
+    def _epigenetics_enabled(self) -> bool:
+        return self._epigenetics is not None
+
+    def _record_probe_epigenetics(self, probe_reports: list[ProbeRunReport]) -> None:
+        """Record probe results into the epigenetics engine and advance round.
+
+        Called at the end of each kernel round. For each probe that ran
+        (not skipped/errored), records whether it found issues.
+        """
+        if not self._epigenetics_enabled():
+            return
+        try:
+            for pr in probe_reports:
+                if pr.skipped_reason or pr.error:
+                    continue
+                found_issues = len(pr.issues) > 0
+                self._epigenetics.record_probe_result(pr.probe_id, found_issues)
+            self._epigenetics.advance_round()
+            logger.debug("Epigenetics status: %s", self._epigenetics.get_status())
+        except Exception as e:  # pragma: no cover
+            logger.debug("Epigenetics recording failed: %s", e)
+
+    def _should_skip_probe_by_epigenetics(self, probe_id: str) -> bool:
+        """Check if a probe should be skipped this round based on frequency multiplier.
+
+        When frequency_multiplier < 1.0, the probe is probabilistically skipped.
+        Protected probes are never skipped.
+        """
+        if not self._epigenetics_enabled():
+            return False
+        try:
+            freq_mult, _ = self._epigenetics.get_probe_multiplier(probe_id)
+            if freq_mult >= 1.0:
+                return False
+            # Probabilistic skip: e.g., freq_mult=0.5 means 50% chance of running
+            import random
+            return random.random() > freq_mult
+        except Exception:  # pragma: no cover
+            return False
 
     def _lookup_capsule_hint(self, issue: Issue) -> tuple[str, Optional[SkillCapsule]]:
         """Return the prompt hint + matching capsule for an issue, if any."""
@@ -683,6 +757,7 @@ class Kernel:
             issues, probe_reports = self._detect()
             report.issues_seen = len(issues)
             self._evaluate_rules(probe_reports, report=report)
+            self._record_probe_epigenetics(probe_reports)
             self._maybe_run_rca(issues)
             self._handle_issues(issues, report=report)
             self._maybe_decompose_goals()
@@ -1054,6 +1129,16 @@ class Kernel:
                 "Skill capsule fast-path applied: id=%s effectiveness=%.2f",
                 matched_capsule.capsule_id[:8], matched_capsule.effectiveness,
             )
+        # L2 Episodic Memory: recall similar past fixes
+        episodic_context = ""
+        try:
+            episodes = self._episodic_memory.recall_similar(
+                probe_id=issue.source_probe,
+                issue_text=f"{issue.title or ''} {issue.description or ''}",
+            )
+            episodic_context = self._episodic_memory.format_for_prompt(episodes)
+        except Exception as e:  # pragma: no cover
+            logger.debug("Episodic memory recall failed: %s", e)
         try:
             history = load_history(self.deps.storage, "fix_issue")
             rca_hint = self._rca_contexts.get(issue.hash, "")
@@ -1063,6 +1148,7 @@ class Kernel:
                 remediation_hint=rca_hint,
                 enable_self_improve=self.config.enable_self_improve_prompt,
                 capsule_hint=capsule_hint,
+                episodic_context=episodic_context,
             )
             agent_result = self.deps.agent.heal(
                 prompt,

@@ -614,6 +614,43 @@ class SqliteStorageProvider(StorageProvider):
             rows = conn.execute(sql, (since_iso,)).fetchall()
         return [self._row_to_feature(r) for r in rows if r]
 
+    # ── episodic memory ──
+    def get_recent_successful_actions(self, days: int = 7) -> list[dict]:
+        """Get successful heal action logs from the last N days.
+
+        Returns list of dicts suitable for EpisodicMemory consumption.
+        """
+        from datetime import timedelta
+        since_iso = _to_iso(datetime.now(timezone.utc) - timedelta(days=days))
+        with self._guarded() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, action_type, status, category, title,
+                       result_summary, details_json, created_at
+                FROM action_logs
+                WHERE action_type = 'heal'
+                  AND status = 'success'
+                  AND created_at >= ?
+                ORDER BY created_at DESC
+                LIMIT 50
+                """,
+                (since_iso,),
+            ).fetchall()
+        results: list[dict] = []
+        for r in rows:
+            details = _safe_loads(r["details_json"])
+            results.append({
+                "id": int(r["id"]),
+                "source_probe": details.get("source_probe", ""),
+                "category": r["category"] or "",
+                "title": r["title"] or "",
+                "result_summary": r["result_summary"] or "",
+                "files_changed": details.get("files_changed", []),
+                "details": details,
+                "created_at": r["created_at"],
+            })
+        return results
+
     # ── internals ──
     def _guarded(self) -> "_GuardedConnection":
         if self._conn is None:

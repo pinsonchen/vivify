@@ -45,6 +45,12 @@ from vivify.pr_mode.pr_creator import PrCreator, PullRequest
 from vivify.pr_mode.quality_check import QualityCheckResult, run_quality_checks
 from vivify.pr_mode.self_grow_guard import classify_worktree
 from vivify.pr_mode.worktree import WorktreeManager
+from vivify.verifier.metrics_collector import (
+    DataDrivenVerifier,
+    MetricSnapshot,
+    MetricsCollector,
+    VerificationVerdict,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +96,14 @@ class FeaturePipelineConfig:
     auto_revert_enabled: bool = True   # 是否启用自动 revert
     # ── Task #73: Agent cost model ────────────────────────────────────────
     cost_model: AgentCostModel = field(default_factory=AgentCostModel)
+    # ── Task #119: data-driven verification ───────────────────────────────
+    data_driven_verification: bool = True
+    verification_thresholds: dict = field(default_factory=lambda: {
+        "min_quality_delta": -0.1,
+        "allow_test_regression": False,
+        "allow_lint_regression": True,
+        "confidence_threshold": 0.7,
+    })
 
 
 @dataclass
@@ -267,6 +281,9 @@ class FeaturePipeline:
         result: Optional[AgentResult] = None
         # Task #73: resolve agent budget from cost model based on priority
         max_turns, timeout = self._get_agent_params(feature)
+        # Task #119: collect baseline metrics before development
+        if self.config.data_driven_verification:
+            self._collect_baseline_metrics(feature)
         try:
             self._update(feature, status="developing")
             history = load_history(self.storage, "feature_develop")
@@ -421,6 +438,57 @@ class FeaturePipeline:
         start = time.time()
         # Mark verifying so the recovery sweep can detect a stuck verify run.
         self._update(feature, status="verifying")
+
+        # ── Task #119: data-driven verification (pre-LLM) ────────────────────
+        data_driven_verdict: Optional[VerificationVerdict] = None
+        if self.config.data_driven_verification:
+            data_driven_verdict = self._run_data_driven_verification(feature)
+            if data_driven_verdict and not data_driven_verdict.requires_llm_review:
+                # High-confidence automated verdict — skip LLM verification
+                verified = data_driven_verdict.passed
+                new_status = "verified" if verified else "deployed_with_issues"
+                verification_data = {
+                    "verified": verified,
+                    "data_driven": True,
+                    "confidence": data_driven_verdict.confidence,
+                    "reason": data_driven_verdict.reason,
+                    "metrics_delta": (
+                        data_driven_verdict.metrics_delta.summary
+                        if data_driven_verdict.metrics_delta else ""
+                    ),
+                }
+                try:
+                    dd_json = json.dumps(
+                        verification_data, ensure_ascii=False
+                    )[:4000]
+                except (TypeError, ValueError):
+                    dd_json = None
+
+                dd_update: dict = {
+                    "status": new_status,
+                    "summary": data_driven_verdict.reason[:500],
+                }
+                if dd_json:
+                    dd_update["verification_result"] = dd_json
+                self._update(feature, **dd_update)
+
+                report.durations["verify"] = time.time() - start
+                report.status = new_status
+                self._log_action(
+                    round_num=round_num, action_type="feature_verify",
+                    status="success" if verified else "failed",
+                    feature=feature,
+                    summary=f"[data-driven] {data_driven_verdict.reason}"[:2000],
+                    details={
+                        "data_driven": True,
+                        "confidence": data_driven_verdict.confidence,
+                        "verdict": "verified" if verified else "failed",
+                    },
+                    duration=report.durations["verify"],
+                )
+                return
+
+        # ── LLM-based verification (fallback or when confidence is low) ──────
         prompt = builders.build_feature_verify(feature)
         result = self.agent.heal(
             prompt,
@@ -1077,6 +1145,84 @@ class FeaturePipeline:
             pass  # storage backend doesn't support ideas yet
         except Exception as e:  # pragma: no cover
             logger.debug("_maybe_complete_idea(%d) failed: %s", idea_id, e)
+
+    # ── Task #119: data-driven verification helper ────────────────────
+    def _run_data_driven_verification(
+        self, feature: FeatureRequest,
+    ) -> Optional[VerificationVerdict]:
+        """Run data-driven verification using metrics comparison.
+
+        Attempts to collect current metrics and compare against the baseline
+        stored on the feature. Returns None if no baseline is available or
+        if no commands are configured (graceful skip).
+        """
+        try:
+            # Build collector config from harness-like fields on the pipeline config
+            harness_cfg = {
+                "test_command": self.config.quality_test_command or "",
+                "lint_command": "",  # Not on pipeline config; skip
+                "typecheck_command": "",
+                "build_command": "",
+            }
+            # If no test command is configured, data-driven cannot collect anything
+            if not any(harness_cfg.values()):
+                return None
+
+            collector = MetricsCollector(
+                workspace=self.worktrees.repo_root,
+                config=harness_cfg,
+            )
+
+            # Retrieve stored baseline from feature metadata
+            baseline_data = getattr(feature, "_metrics_baseline", None)
+            if baseline_data is None:
+                # No baseline stored — collect one now as reference
+                # (first-time run for this feature)
+                return None
+
+            baseline = MetricSnapshot(**baseline_data) if isinstance(baseline_data, dict) else baseline_data
+
+            verifier = DataDrivenVerifier(
+                collector=collector,
+                thresholds=self.config.verification_thresholds,
+            )
+            return verifier.verify(baseline)
+        except Exception as exc:
+            logger.debug(
+                "Data-driven verification failed for #%s: %s",
+                feature.id, exc,
+            )
+            return None
+
+    def _collect_baseline_metrics(self, feature: FeatureRequest) -> Optional[MetricSnapshot]:
+        """Collect baseline metrics before development starts.
+
+        Returns the snapshot or None if collection is not possible.
+        """
+        try:
+            harness_cfg = {
+                "test_command": self.config.quality_test_command or "",
+                "lint_command": "",
+                "typecheck_command": "",
+                "build_command": "",
+            }
+            if not any(harness_cfg.values()):
+                return None
+
+            collector = MetricsCollector(
+                workspace=self.worktrees.repo_root,
+                config=harness_cfg,
+            )
+            snapshot = collector.collect_snapshot()
+            # Stash on feature object for verify stage to use
+            object.__setattr__(feature, "_metrics_baseline", snapshot)
+            return snapshot
+        except Exception as exc:
+            logger.debug(
+                "Baseline metrics collection failed for #%s: %s",
+                feature.id, exc,
+            )
+            return None
 
     # ── Fix #69: pre-push change detection helper ─────────────────────────
     @staticmethod

@@ -14,6 +14,7 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
+from vivify.knowledge.gc import GCConfig, KnowledgeGC
 from vivify.knowledge.models import (
     CodeConvention,
     EdgeType,
@@ -35,12 +36,20 @@ class KnowledgeContextProvider:
     re-reading from disk on every prompt.
     """
 
-    def __init__(self, project_root: Path):
+    def __init__(self, project_root: Path, gc_config: Optional[GCConfig] = None):
         self.root = Path(project_root)
         self.storage = KnowledgeStorage(self.root)
         self._graph: Optional[KnowledgeGraph] = None
         self._graph_loaded = False
         self._conventions: Optional[List[CodeConvention]] = None
+        # Knowledge GC integration
+        self._gc: Optional[KnowledgeGC] = None
+        try:
+            knowledge_dir = self.root / ".vivify" / "knowledge"
+            cfg = gc_config or GCConfig()
+            self._gc = KnowledgeGC(config=cfg, knowledge_dir=knowledge_dir)
+        except Exception:  # pragma: no cover
+            logger.debug("KnowledgeGC init failed", exc_info=True)
 
     # ── Public API ──────────────────────────────────────────────────────────
 
@@ -85,6 +94,14 @@ class KnowledgeContextProvider:
 
             if not matched_nodes:
                 return ""
+
+            # Record access for matched nodes (GC activity tracking)
+            if self._gc is not None:
+                for node in matched_nodes[:5]:
+                    try:
+                        self._gc.record_access(node.id)
+                    except Exception:  # pragma: no cover
+                        pass
 
             # Build targeted context
             parts: List[str] = []
@@ -309,6 +326,14 @@ class KnowledgeContextProvider:
         if not top_modules:
             return ""
 
+        # Record access for selected modules (GC activity tracking)
+        if self._gc is not None:
+            for m in top_modules:
+                try:
+                    self._gc.record_access(m.id)
+                except Exception:  # pragma: no cover
+                    pass
+
         details: List[str] = []
         char_count = 0
         for m in top_modules:
@@ -327,7 +352,12 @@ class KnowledgeContextProvider:
         module: GraphNode,
         query_tokens: Set[str],
     ) -> float:
-        """Compute relevance score between query tokens and module attributes."""
+        """Compute relevance score between query tokens and module attributes.
+
+        When the GC subsystem is available, the raw Jaccard score is multiplied
+        by the node's activity weight so that stale/archived nodes are naturally
+        de-prioritised.
+        """
         if not query_tokens:
             return 0.0
         module_tokens = self._tokenize(
@@ -338,7 +368,12 @@ class KnowledgeContextProvider:
         if not module_tokens:
             return 0.0
         intersection = query_tokens & module_tokens
-        return len(intersection) / (len(query_tokens) + 0.1)
+        raw_score = len(intersection) / (len(query_tokens) + 0.1)
+        # Apply GC weight: fresh nodes keep full score, stale nodes get penalised
+        if self._gc is not None:
+            weight = self._gc.get_node_weight(module.id)
+            raw_score *= weight
+        return raw_score
 
     def _tokenize(self, text: str) -> Set[str]:
         """Tokenize: split on non-alphanumeric, lowercase, expand camel/snake."""

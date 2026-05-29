@@ -96,6 +96,19 @@ class StorageProvider(ABC):
         """
         return []
 
+    # ── episodic memory ──
+    def get_recent_successful_actions(self, days: int = 7) -> list[dict]:
+        """Get successful heal action logs from the last N days.
+
+        Used by Episodic Memory to find similar past fixes.
+        Returns list of dicts with keys:
+        id, source_probe, category, title, result_summary,
+        files_changed, details, created_at
+
+        Default implementation returns empty list (backward-compatible).
+        """
+        return []
+
     # ── ideas ──
     def store_idea(self, idea: Idea) -> int:
         """Persist a new Idea and return its id."""
